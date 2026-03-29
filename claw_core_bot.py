@@ -1,11 +1,11 @@
-import requests, asyncio, os, json
+import requests, asyncio, os, re
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
-# =========================
-# 🔐 ENV
-# =========================
+# ========================
+# CONFIG
+# ========================
 load_dotenv("/home/mau/claw_core/.env")
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -13,20 +13,92 @@ ALLOWED_USER = int(os.getenv("ALLOWED_USER"))
 N8N_URL = os.getenv("N8N_URL")
 N8N_API_KEY = os.getenv("N8N_API_KEY")
 
-# =========================
-# 🧠 ESTADO GLOBAL
-# =========================
-def init_state(context):
-    if "flow" not in context.user_data:
-        context.user_data["flow"] = {
-            "type": None,
-            "needs": [],
-            "answers": {}
-        }
+# ========================
+# SEGURIDAD
+# ========================
+def is_real_command(cmd):
+    return any(x in cmd for x in ["apt", "docker", "systemctl", "pip", "python"])
 
-# =========================
-# 🔥 CREAR WORKFLOW
-# =========================
+# ========================
+# CREAR WORKFLOW REAL
+# ========================
+def create_payment_workflow():
+
+    return {
+        "name": "Validación Pagos WhatsApp",
+        "nodes": [
+            {
+                "parameters": {
+                    "path": "validar-pago",
+                    "httpMethod": "POST"
+                },
+                "name": "Webhook",
+                "type": "n8n-nodes-base.webhook",
+                "typeVersion": 1,
+                "position": [200, 300]
+            },
+            {
+                "parameters": {
+                    "functionCode": """
+const texto = $json["body"] || "";
+
+const ref = texto.match(/\\d{6,}/);
+
+return [{
+  referencia: ref ? ref[0] : null
+}];
+"""
+                },
+                "name": "Extraer Referencia",
+                "type": "n8n-nodes-base.function",
+                "typeVersion": 1,
+                "position": [400, 300]
+            },
+            {
+                "parameters": {
+                    "resource": "message",
+                    "operation": "getAll"
+                },
+                "name": "Gmail",
+                "type": "n8n-nodes-base.gmail",
+                "typeVersion": 1,
+                "position": [600, 300]
+            },
+            {
+                "parameters": {
+                    "functionCode": """
+const ref = $json["referencia"];
+const correo = JSON.stringify($json);
+
+if(ref && correo.includes(ref)){
+  return [{ok:true}];
+}
+return [{ok:false}];
+"""
+                },
+                "name": "Validar Pago",
+                "type": "n8n-nodes-base.function",
+                "typeVersion": 1,
+                "position": [800, 300]
+            }
+        ],
+        "connections": {
+            "Webhook": {
+                "main": [[{"node": "Extraer Referencia"}]]
+            },
+            "Extraer Referencia": {
+                "main": [[{"node": "Gmail"}]]
+            },
+            "Gmail": {
+                "main": [[{"node": "Validar Pago"}]]
+            }
+        },
+        "settings": {}
+    }
+
+# ========================
+# ENVIAR A N8N
+# ========================
 def create_n8n_workflow(data):
     try:
         r = requests.post(
@@ -38,156 +110,124 @@ def create_n8n_workflow(data):
             json=data,
             timeout=10
         )
-        return r.text
+        return r.json()
     except Exception as e:
         return str(e)
 
-# =========================
-# 🧠 DETECTAR NECESIDADES
-# =========================
-def detect_needs(text):
-    needs = []
-
-    if "whatsapp" in text:
-        needs.append("whatsapp")
-    if "correo" in text or "gmail" in text or "banco" in text:
-        needs.append("gmail")
-    if "captura" in text or "imagen" in text or "ocr" in text:
-        needs.append("ocr")
-    if "api" in text:
-        needs.append("api")
-
-    return needs
-
-# =========================
-# 🧠 GENERAR WORKFLOW DINÁMICO
-# =========================
-def generate_workflow(flow_type):
-    return {
-        "name": f"Workflow {flow_type}",
-        "nodes": [
-            {
-                "parameters": {"path": "webhook"},
-                "id": "webhook",
-                "name": "Webhook",
-                "type": "n8n-nodes-base.webhook",
-                "typeVersion": 1,
-                "position": [200,300]
-            }
-        ],
-        "connections": {},
-        "settings": {}
-    }
-
-# =========================
-# 🧠 EXPLICACIÓN INTELIGENTE
-# =========================
-def explain(flow, needs):
-    txt = "🧠 ANÁLISIS:\n"
-
-    if "whatsapp" in needs:
-        txt += "- Se integrará WhatsApp\n"
-    if "gmail" in needs:
-        txt += "- Se leerán correos\n"
-    if "ocr" in needs:
-        txt += "- Se procesarán imágenes\n"
-
-    txt += "\n⚙️ Se requiere configuración.\n"
-
-    return txt
-
-# =========================
-# 📩 MENSAJES
-# =========================
+# ========================
+# HANDLE MENSAJES
+# ========================
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     if update.effective_user.id != ALLOWED_USER:
         return
 
-    init_state(context)
-
     text = update.message.text.lower()
 
-    needs = detect_needs(text)
+    # ========================
+    # DETECTOR WORKFLOW INTELIGENTE
+    # ========================
+    if "pago" in text or "transferencia" in text:
 
-    if needs:
-        context.user_data["flow"]["type"] = text
-        context.user_data["flow"]["needs"] = needs
-
-        msg = explain(text, needs)
-
-        first = needs[0]
+        context.user_data["flow"] = "pagos"
 
         kb = [[
-            InlineKeyboardButton("✅ SI", callback_data=f"{first}_yes"),
-            InlineKeyboardButton("❌ NO", callback_data=f"{first}_no")
+            InlineKeyboardButton("✅ Sí tengo API WhatsApp", callback_data="wa_yes"),
+            InlineKeyboardButton("❌ No tengo", callback_data="wa_no")
         ]]
 
-        await update.message.reply_text(msg)
         await update.message.reply_text(
-            f"¿Tienes {first.upper()}?",
+            "📲 ¿Tienes API de WhatsApp?",
             reply_markup=InlineKeyboardMarkup(kb)
         )
         return
 
-    await update.message.reply_text("No detecté un flujo claro")
+    # ========================
+    # COMANDOS
+    # ========================
+    cmd = None
 
-# =========================
-# 🔘 BOTONES INTELIGENTES
-# =========================
+    if "docker" in text:
+        cmd = "apt-get update && apt-get install -y docker.io"
+
+    if cmd and is_real_command(cmd):
+
+        context.user_data["pending_cmd"] = cmd
+
+        kb = [[
+            InlineKeyboardButton("✅ Ejecutar", callback_data="yes"),
+            InlineKeyboardButton("❌ Cancelar", callback_data="no")
+        ]]
+
+        await update.message.reply_text(
+            f"⚠️ Ejecutar:\n{cmd}",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
+        return
+
+    await update.message.reply_text("No entendí")
+
+# ========================
+# BOTONES
+# ========================
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     q = update.callback_query
     await q.answer()
 
-    state = context.user_data["flow"]
-    needs = state["needs"]
+    data = q.data
 
-    key = q.data.split("_")[0]
-    val = q.data.split("_")[1]
+    # ========================
+    # FLUJO PAGOS
+    # ========================
+    if data == "wa_yes":
 
-    state["answers"][key] = val
+        await q.edit_message_text("📩 Conectando Gmail...")
 
-    idx = list(state["answers"]).__len__()
+        workflow = create_payment_workflow()
+        res = create_n8n_workflow(workflow)
 
-    # 🔥 SIGUIENTE PREGUNTA
-    if idx < len(needs):
-        next_need = needs[idx]
-
-        kb = [[
-            InlineKeyboardButton("✅ SI", callback_data=f"{next_need}_yes"),
-            InlineKeyboardButton("❌ NO", callback_data=f"{next_need}_no")
-        ]]
-
-        await q.edit_message_text(f"Registrado: {key} = {val}")
         await q.message.reply_text(
-            f"¿Tienes {next_need.upper()}?",
-            reply_markup=InlineKeyboardMarkup(kb)
+            "🚀 Workflow creado\n\n"
+            "✔ Recibe capturas\n"
+            "✔ Extrae referencia\n"
+            "✔ Lee Gmail\n"
+            "✔ Valida pago\n\n"
+            "⚙️ Ahora conecta:\n"
+            "- Gmail en n8n\n"
+            "- API WhatsApp"
         )
         return
 
-    # 🔥 CREAR WORKFLOW
-    await q.edit_message_text("🚀 Generando workflow...")
+    if data == "wa_no":
+        await q.edit_message_text(
+            "⚠️ Necesitas API de WhatsApp\n"
+            "Te recomiendo Evolution API o Meta Cloud"
+        )
+        return
 
-    wf = generate_workflow(state["type"])
-    res = create_n8n_workflow(wf)
+    # ========================
+    # COMANDOS
+    # ========================
+    if data == "yes":
 
-    # 🔥 RESPUESTA LIMPIA
-    await q.message.reply_text("✅ Workflow creado en n8n")
+        cmd = context.user_data.get("pending_cmd")
 
-    resumen = "🔧 CONFIGURACIÓN:\n"
+        p = await asyncio.create_subprocess_shell(cmd)
+        await p.communicate()
 
-    for k,v in state["answers"].items():
-        if v == "no":
-            resumen += f"- Configurar {k}\n"
+        await q.edit_message_text("✅ Ejecutado")
+        return
 
-    await q.message.reply_text(resumen)
+    if data == "no":
+        await q.edit_message_text("❌ Cancelado")
 
-# =========================
-# 🚀 BOT
-# =========================
+# ========================
+# START
+# ========================
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 app.add_handler(CallbackQueryHandler(buttons))
 
-print("🚀 CLAW PRODUCCIÓN TOTAL ACTIVO")
 app.run_polling()
