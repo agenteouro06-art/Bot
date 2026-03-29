@@ -1,10 +1,10 @@
-import requests, asyncio, os, re
+import requests, asyncio, os, json
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
 # =========================
-# 🔐 VARIABLES DE ENTORNO
+# 🔐 ENV
 # =========================
 load_dotenv("/home/mau/claw_core/.env")
 
@@ -14,39 +14,9 @@ N8N_URL = os.getenv("N8N_URL")
 N8N_API_KEY = os.getenv("N8N_API_KEY")
 
 # =========================
-# 🔐 SEGURIDAD
-# =========================
-def is_safe(cmd):
-    BLOCKED = ["rm -rf","shutdown","reboot","mkfs","dd"]
-    BAD = [";","&&","|"]
-    return not any(x in cmd for x in BLOCKED) and not any(x in cmd for x in BAD)
-
-# =========================
-# 🔥 DETECTOR COMANDOS
-# =========================
-def is_real_command(cmd):
-    return any(x in cmd for x in ["apt", "docker", "systemctl", "pip", "python", "curl", "find"])
-
-# =========================
 # 🔥 CREAR WORKFLOW EN N8N
 # =========================
-def create_n8n_workflow():
-    data = {
-        "name": "CLAW Workflow",
-        "nodes": [
-            {
-                "parameters": {},
-                "id": "start-node",
-                "name": "Start",
-                "type": "n8n-nodes-base.start",
-                "typeVersion": 1,
-                "position": [250, 300]
-            }
-        ],
-        "connections": {},
-        "settings": {}
-    }
-
+def create_n8n_workflow(data):
     try:
         r = requests.post(
             f"{N8N_URL}/api/v1/workflows",
@@ -62,16 +32,77 @@ def create_n8n_workflow():
         return str(e)
 
 # =========================
-# ⚡ EJECUTAR COMANDO
+# 🧠 GENERADOR WORKFLOW REAL
 # =========================
-async def run_cmd(cmd):
-    p = await asyncio.create_subprocess_shell(
-        cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
-    )
-    out, err = await p.communicate()
-    return (out + err).decode()
+def generate_workflow_whatsapp_banco():
+
+    return {
+        "name": "Validación Pagos WhatsApp vs Banco",
+        "nodes": [
+            {
+                "parameters": {
+                    "path": "whatsapp-pagos",
+                    "httpMethod": "POST"
+                },
+                "id": "webhook",
+                "name": "Webhook WhatsApp",
+                "type": "n8n-nodes-base.webhook",
+                "typeVersion": 1,
+                "position": [200, 300]
+            },
+            {
+                "parameters": {
+                    "operation": "readBinaryData"
+                },
+                "id": "ocr",
+                "name": "Leer Imagen (OCR)",
+                "type": "n8n-nodes-base.readBinaryFile",
+                "typeVersion": 1,
+                "position": [400, 300]
+            },
+            {
+                "parameters": {
+                    "resource": "message",
+                    "operation": "getAll"
+                },
+                "id": "gmail",
+                "name": "Leer Correos Banco",
+                "type": "n8n-nodes-base.gmail",
+                "typeVersion": 1,
+                "position": [600, 300]
+            },
+            {
+                "parameters": {
+                    "functionCode": """
+const refImg = $json["reference"];
+const refMail = $json["subject"];
+
+if(refImg && refMail && refMail.includes(refImg)){
+  return [{match:true}];
+}
+return [{match:false}];
+"""
+                },
+                "id": "validar",
+                "name": "Validar Pago",
+                "type": "n8n-nodes-base.function",
+                "typeVersion": 1,
+                "position": [800, 300]
+            }
+        ],
+        "connections": {
+            "Webhook WhatsApp": {
+                "main": [[{"node": "Leer Imagen (OCR)", "type": "main", "index": 0}]]
+            },
+            "Leer Imagen (OCR)": {
+                "main": [[{"node": "Leer Correos Banco", "type": "main", "index": 0}]]
+            },
+            "Leer Correos Banco": {
+                "main": [[{"node": "Validar Pago", "type": "main", "index": 0}]]
+            }
+        },
+        "settings": {}
+    }
 
 # =========================
 # 📩 MENSAJES
@@ -82,40 +113,40 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text.lower()
 
-    # 🔥 DETECTOR N8N
-    if "n8n" in text or "workflow" in text:
-        res = create_n8n_workflow()
-        await update.message.reply_text(f"✅ Enviado a n8n:\n{res}")
-        return
+    # 🔥 DETECTOR INTELIGENTE
+    if "whatsapp" in text and "banco" in text:
 
-    # 🔥 GENERADOR DE COMANDOS (puedes ampliar)
-    cmd = None
+        workflow = generate_workflow_whatsapp_banco()
 
-    if "docker" in text:
-        cmd = "apt-get update && apt-get install -y docker.io"
-    elif "curl" in text:
-        cmd = "apt-get update && apt-get install -y curl"
-    elif "limpieza" in text:
-        cmd = "find /tmp -type f -mtime +7 -delete"
+        context.user_data["workflow"] = workflow
 
-    # 🔥 BOTONES (NO EJECUTA DIRECTO)
-    if cmd and is_real_command(cmd):
+        explicacion = """
+[AGENTE: ARQUITECTO]
+Se detecta necesidad de validación automática de pagos.
 
-        context.user_data["pending_cmd"] = cmd
+[AGENTE: DISEÑADOR]
+Se crea flujo:
+- Webhook recibe captura WhatsApp
+- OCR extrae datos
+- Gmail lee correo banco
+- Se comparan referencias
+
+[AGENTE: VALIDADOR]
+Se valida coincidencia de pago.
+
+[AGENTE: RESULTADO]
+Si coincide → marcar como validado.
+"""
 
         kb = [[
-            InlineKeyboardButton("✅ EJECUTAR", callback_data="yes"),
-            InlineKeyboardButton("❌ CANCELAR", callback_data="no")
+            InlineKeyboardButton("✅ CREAR EN N8N", callback_data="crear"),
+            InlineKeyboardButton("❌ CANCELAR", callback_data="cancelar")
         ]]
 
-        await update.message.reply_text(
-            f"⚠️ Ejecutar:\n{cmd}",
-            reply_markup=InlineKeyboardMarkup(kb)
-        )
+        await update.message.reply_text(explicacion, reply_markup=InlineKeyboardMarkup(kb))
+        return
 
-        return  # 🔥 CLAVE
-
-    await update.message.reply_text("No entendí o no es comando")
+    await update.message.reply_text("No entendí la solicitud")
 
 # =========================
 # 🔘 BOTONES
@@ -124,34 +155,26 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
 
-    cmd = context.user_data.get("pending_cmd")
+    workflow = context.user_data.get("workflow")
 
-    if not cmd:
-        await q.edit_message_text("⚠️ No hay comando pendiente")
-        return
+    if q.data == "crear" and workflow:
 
-    if q.data == "yes" and is_safe(cmd):
+        await q.edit_message_text("⏳ Creando workflow en n8n...")
 
-        await q.edit_message_text(f"⏳ Ejecutando:\n{cmd}")
+        res = create_n8n_workflow(workflow)
 
-        try:
-            out = await run_cmd(cmd)
-            await q.message.reply_text(f"✅ Resultado:\n{out[:1000]}")
-        except Exception as e:
-            await q.message.reply_text(str(e))
+        await q.message.reply_text(f"✅ Workflow creado:\n{res}")
 
     else:
         await q.edit_message_text("❌ Cancelado")
 
-    context.user_data["pending_cmd"] = None
-
 # =========================
-# 🚀 INICIO BOT
+# 🚀 BOT
 # =========================
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 app.add_handler(CallbackQueryHandler(buttons))
 
-print("🚀 CLAW FUNCIONANDO")
+print("🚀 CLAW NIVEL PRO ACTIVO")
 app.run_polling()
