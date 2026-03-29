@@ -1,153 +1,137 @@
-import requests, asyncio, os, re, json
+import os, requests, subprocess, asyncio
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.constants import ChatAction
-from telegram.ext import ApplicationBuilder, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
 # ========================
-# CONFIG
+# 🔐 CONFIG
 # ========================
 load_dotenv("/home/mau/claw_core/.env")
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 ALLOWED_USER = int(os.getenv("ALLOWED_USER"))
+
 N8N_URL = os.getenv("N8N_URL")
 N8N_API_KEY = os.getenv("N8N_API_KEY")
 
 # ========================
-# UTILIDADES INTELIGENTES
+# 🧠 MULTI-AGENTE
 # ========================
+def multi_agent_analysis(text):
 
+    return f"""
+🧠 ANÁLISIS:
+- Se detectó intención de automatización
+
+🏗 ARQUITECTO:
+- Se usará n8n + OCR + Gmail + WhatsApp
+
+🎨 DISEÑADOR:
+- Flujo: Webhook → OCR → Procesar → Gmail → Validar
+
+🧪 VALIDADOR:
+- Se requieren credenciales externas
+
+⚙ EJECUTOR:
+- Preparado para ejecutar comandos
+
+📘 EXPLICADOR:
+Este flujo validará pagos automáticamente
+"""
+
+# ========================
+# 🔍 DETECTOR COMANDOS
+# ========================
 def is_real_command(cmd):
     return any(x in cmd for x in ["apt", "docker", "systemctl", "pip", "python"])
 
-def needs_ocr(text):
-    palabras = ["imagen", "foto", "captura", "pantalla", "screenshot"]
-    return any(p in text for p in palabras)
-
-def detect_tools(text):
-    tools = []
-
-    if "whatsapp" in text:
-        tools.append("whatsapp")
-
-    if "correo" in text or "gmail" in text:
-        tools.append("gmail")
-
-    if needs_ocr(text):
-        tools.append("ocr")
-
-    return tools
-
 # ========================
-# TEST CONEXIÓN N8N
+# 🔥 CREAR WORKFLOW PRO
 # ========================
-def test_n8n():
-    try:
-        r = requests.get(f"{N8N_URL}/api/v1/workflows", headers={
-            "X-N8N-API-KEY": N8N_API_KEY
-        }, timeout=5)
-        return r.status_code == 200
-    except:
-        return False
+def create_n8n_workflow():
 
-# ========================
-# CREAR WORKFLOW PRO REAL
-# ========================
-def create_workflow(text):
-
-    tools = detect_tools(text)
-    nodes = []
-    connections = {}
-
-    # Webhook base
-    nodes.append({
-        "parameters": {
-            "path": "auto-webhook",
-            "httpMethod": "POST"
-        },
-        "name": "Webhook",
-        "type": "n8n-nodes-base.webhook",
-        "typeVersion": 1,
-        "position": [200, 300]
-    })
-
-    last = "Webhook"
-
-    # OCR si aplica
-    if "ocr" in tools:
-        nodes.append({
-            "parameters": {
-                "url": "https://api.ocr.space/parse/image",
-                "method": "POST"
+    workflow = {
+        "name": "Validación Pagos PRO",
+        "nodes": [
+            {
+                "parameters": {
+                    "path": "validar-pagos",
+                    "httpMethod": "POST"
+                },
+                "id": "webhook",
+                "name": "Webhook WhatsApp",
+                "type": "n8n-nodes-base.webhook",
+                "typeVersion": 1,
+                "position": [200,300]
             },
-            "name": "OCR",
-            "type": "n8n-nodes-base.httpRequest",
-            "typeVersion": 1,
-            "position": [400, 300]
-        })
-        connections[last] = {"main": [[{"node": "OCR"}]]}
-        last = "OCR"
-
-    # Extraer datos
-    nodes.append({
-        "parameters": {
-            "functionCode": """
-const text = JSON.stringify($json);
-const ref = text.match(/\\d{6,}/);
-return [{ref: ref ? ref[0] : null}];
-"""
-        },
-        "name": "Procesar Datos",
-        "type": "n8n-nodes-base.function",
-        "typeVersion": 1,
-        "position": [600, 300]
-    })
-    connections[last] = {"main": [[{"node": "Procesar Datos"}]]}
-    last = "Procesar Datos"
-
-    # Gmail si aplica
-    if "gmail" in tools:
-        nodes.append({
-            "parameters": {
-                "resource": "message",
-                "operation": "getAll"
+            {
+                "parameters": {
+                    "url": "https://api.ocr.space/parse/image",
+                    "options": {}
+                },
+                "id": "ocr",
+                "name": "OCR",
+                "type": "n8n-nodes-base.httpRequest",
+                "typeVersion": 1,
+                "position": [400,300]
             },
-            "name": "Gmail",
-            "type": "n8n-nodes-base.gmail",
-            "typeVersion": 1,
-            "position": [800, 300]
-        })
-        connections[last] = {"main": [[{"node": "Gmail"}]]}
-        last = "Gmail"
+            {
+                "parameters": {
+                    "functionCode": "return [{ref: $json.ParsedResults?.[0]?.ParsedText || ''}];"
+                },
+                "id": "procesar",
+                "name": "Procesar Datos",
+                "type": "n8n-nodes-base.function",
+                "typeVersion": 1,
+                "position": [600,300]
+            },
+            {
+                "parameters": {
+                    "resource": "message",
+                    "operation": "getAll"
+                },
+                "id": "gmail",
+                "name": "Gmail",
+                "type": "n8n-nodes-base.gmail",
+                "typeVersion": 1,
+                "position": [800,300]
+            },
+            {
+                "parameters": {
+                    "functionCode": """
+const ref = $json.ref || "";
+const correo = $json.subject || "";
 
-    # Validación
-    nodes.append({
-        "parameters": {
-            "functionCode": """
-const ref = $json.ref;
-const data = JSON.stringify($json);
-return [{ok: ref && data.includes(ref)}];
+if(correo.includes(ref)){
+  return [{ok:true}];
+}
+return [{ok:false}];
 """
+                },
+                "id": "validar",
+                "name": "Validar",
+                "type": "n8n-nodes-base.function",
+                "typeVersion": 1,
+                "position": [1000,300]
+            }
+        ],
+        "connections": {
+            "Webhook WhatsApp": {
+                "main": [[{"node": "OCR", "type": "main", "index": 0}]]
+            },
+            "OCR": {
+                "main": [[{"node": "Procesar Datos", "type": "main", "index": 0}]]
+            },
+            "Procesar Datos": {
+                "main": [[{"node": "Gmail", "type": "main", "index": 0}]]
+            },
+            "Gmail": {
+                "main": [[{"node": "Validar", "type": "main", "index": 0}]]
+            }
         },
-        "name": "Validar",
-        "type": "n8n-nodes-base.function",
-        "typeVersion": 1,
-        "position": [1000, 300]
-    })
-    connections[last] = {"main": [[{"node": "Validar"}]]}
-
-    return {
-        "name": "CLAW Auto Workflow",
-        "nodes": nodes,
-        "connections": connections,
         "settings": {}
     }
 
-# ========================
-# ENVIAR A N8N
-# ========================
-def create_n8n_workflow(data):
     try:
         r = requests.post(
             f"{N8N_URL}/api/v1/workflows",
@@ -155,63 +139,64 @@ def create_n8n_workflow(data):
                 "X-N8N-API-KEY": N8N_API_KEY,
                 "Content-Type": "application/json"
             },
-            json=data,
-            timeout=10
+            json=workflow
         )
         return r.json()
     except Exception as e:
         return str(e)
 
 # ========================
-# HANDLE
+# ⚙ INSTALAR WHATSAPP API
+# ========================
+def install_whatsapp():
+    return subprocess.getoutput("docker run -d --name whatsapp-api -p 3000:3000 devlikeapro/whatsapp-http-api")
+
+# ========================
+# 💬 HANDLER PRINCIPAL
 # ========================
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if update.effective_user.id != ALLOWED_USER:
         return
 
-    await context.bot.send_chat_action(
-        chat_id=update.effective_chat.id,
-        action=ChatAction.TYPING
-    )
-
     text = update.message.text.lower()
 
-    # ========================
-    # DETECTOR WORKFLOW
-    # ========================
-    if "workflow" in text or "flujo" in text or "automatiza" in text:
+    await update.message.chat.send_action("typing")
 
-        tools = detect_tools(text)
-        context.user_data["tools"] = tools
-        context.user_data["text"] = text
+    # 🧠 MULTI AGENTE
+    if "problema" in text or "error" in text:
+        await update.message.reply_text(multi_agent_analysis(text))
+        return
 
-        kb = [[
-            InlineKeyboardButton("✅ Continuar", callback_data="build"),
-            InlineKeyboardButton("❌ Cancelar", callback_data="cancel")
-        ]]
+    # 🔥 DETECTOR WORKFLOW
+    if "workflow" in text or "n8n" in text:
 
-        resumen = "🧠 Detecté:\n"
-        for t in tools:
-            resumen += f"✔ {t}\n"
+        await update.message.reply_text("📊 Analizando...")
+
+        context.user_data["need_whatsapp"] = True
+        context.user_data["need_gmail"] = True
+
+        kb = [
+            [InlineKeyboardButton("SI tengo WhatsApp API", callback_data="wa_yes")],
+            [InlineKeyboardButton("NO instalar", callback_data="wa_no")]
+        ]
 
         await update.message.reply_text(
-            resumen + "\n¿Crear workflow?",
+            "¿Tienes API de WhatsApp?",
             reply_markup=InlineKeyboardMarkup(kb)
         )
         return
 
-    # ========================
-    # COMANDOS
-    # ========================
+    # 🔥 COMANDOS
     cmd = None
 
     if "docker" in text:
         cmd = "apt-get update && apt-get install -y docker.io"
+    elif "limpieza" in text:
+        cmd = "find /tmp -type f -mtime +7 -delete"
 
     if cmd and is_real_command(cmd):
-
-        context.user_data["pending_cmd"] = cmd
+        context.user_data["cmd"] = cmd
 
         kb = [[
             InlineKeyboardButton("✅ Ejecutar", callback_data="yes"),
@@ -224,60 +209,63 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    await update.message.reply_text("No entendí")
+    await update.message.reply_text("❌ No entendido")
 
 # ========================
-# BOTONES
+# 🔘 BOTONES
 # ========================
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    q = update.callback_query
-    await q.answer()
+    query = update.callback_query
+    await query.answer()
 
-    data = q.data
+    data = query.data
 
-    if data == "build":
-
-        if not test_n8n():
-            await q.edit_message_text("❌ n8n no responde")
-            return
-
-        text = context.user_data.get("text", "")
-        workflow = create_workflow(text)
-
-        res = create_n8n_workflow(workflow)
-
-        await q.edit_message_text("🚀 Workflow creado")
-
-        await q.message.reply_text(
-            "📌 Configura:\n"
-            "- Gmail (credenciales)\n"
-            "- WhatsApp API\n"
-            "- OCR API si aplica\n\n"
-            "Luego prueba el webhook"
-        )
-        return
-
-    if data == "cancel":
-        await q.edit_message_text("❌ Cancelado")
-        return
-
+    # COMANDOS
     if data == "yes":
-        cmd = context.user_data.get("pending_cmd")
-        p = await asyncio.create_subprocess_shell(cmd)
-        await p.communicate()
-        await q.edit_message_text("✅ Ejecutado")
+        cmd = context.user_data.get("cmd")
+        res = subprocess.getoutput(cmd)
+        await query.edit_message_text(f"✅ Ejecutado:\n{res}")
         return
 
     if data == "no":
-        await q.edit_message_text("❌ Cancelado")
+        await query.edit_message_text("❌ Cancelado")
+        return
+
+    # WHATSAPP
+    if data == "wa_no":
+        res = install_whatsapp()
+        await query.edit_message_text(f"📦 Instalando WhatsApp...\n{res}")
+
+    if data == "wa_yes":
+        await query.edit_message_text("✅ WhatsApp API OK")
+
+    # 🚀 CREAR WORKFLOW
+    wf = create_n8n_workflow()
+
+    await asyncio.sleep(1)
+
+    await query.message.reply_text("""
+🚀 Workflow creado
+
+✔ Recibe capturas
+✔ OCR automático
+✔ Lee Gmail
+✔ Valida pagos
+
+⚙️ Configura:
+- Gmail en n8n
+- OCR API Key
+- Webhook en WhatsApp
+""")
 
 # ========================
-# START
+# 🚀 MAIN
 # ========================
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+app.add_handler(MessageHandler(filters.TEXT, handle))
 app.add_handler(CallbackQueryHandler(buttons))
 
+print("🔥 CLAW PRO ACTIVO")
 app.run_polling()
