@@ -15,22 +15,34 @@ from telegram.ext import (
     filters
 )
 
-# ================================
-# 🔐 ENV
-# ================================
+# ✅ CORRECCIÓN IMPORTANTE (comillas normales)
 load_dotenv("/home/mau/claw_core/.env")
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-ALLOWED_USER = int(os.getenv("ALLOWED_USER"))
-N8N_URL = os.getenv("N8N_URL")
-N8N_API_KEY = os.getenv("N8N_API_KEY")
+TELEGRAM_TOKEN     = os.getenv("TELEGRAM_TOKEN")
+ALLOWED_USER       = int(os.getenv("ALLOWED_USER"))
+N8N_URL            = os.getenv("N8N_URL")
+N8N_API_KEY        = os.getenv("N8N_API_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-# ================================
-# 🧠 IA
-# ================================
-def llamar_ia(prompt):
+# 🧠 PROMPT MEJORADO (modo arquitecto real)
+SYSTEM_PROMPT = """
+Eres CLAW PRO.
 
+Especialista en crear workflows REALES para n8n.
+
+REGLAS CRITICAS:
+- SOLO JSON VALIDO
+- SIN TEXTO FUERA DEL JSON
+- TODOS LOS NODOS CONECTADOS
+- USAR NODOS REALES DE N8N
+- typeVersion correcto
+- LISTO PARA IMPORTAR
+
+SI FALLAS → REINTENTA HASTA LOGRAR JSON VALIDO
+"""
+
+# 🔥 IA
+def llamar_ia(prompt):
     try:
         r = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
@@ -39,12 +51,9 @@ def llamar_ia(prompt):
                 "Content-Type": "application/json"
             },
             json={
-                "model": "anthropic/claude-haiku-3",
+                "model": "openai/gpt-4o-mini",
                 "messages": [
-                    {
-                        "role": "system",
-                        "content": "Eres un arquitecto experto en n8n. Siempre generas workflows completos, conectados y funcionales."
-                    },
+                    {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
                 ]
             },
@@ -54,64 +63,49 @@ def llamar_ia(prompt):
         data = r.json()
 
         if "choices" not in data:
-            return None, "Error IA: " + str(data)
+            return {"texto": str(data), "workflow_json": None}
 
-        texto = data["choices"][0]["message"]["content"]
-
-        # extraer json
-        json_data = None
-        if "```" in texto:
-            try:
-                bloque = texto.split("```")[1]
-                if "json" in bloque:
-                    bloque = bloque.replace("json", "")
-                json_data = json.loads(bloque.strip())
-            except:
-                pass
-
-        return json_data, texto
+        respuesta = data["choices"][0]["message"]["content"]
 
     except Exception as e:
-        return None, str(e)
+        return {"texto": str(e), "workflow_json": None}
 
-# ================================
-# 🏗 FALLBACK (MEJORADO)
-# ================================
-def workflow_base():
+    # 🔍 EXTRAER JSON
+    try:
+        inicio = respuesta.find("{")
+        fin = respuesta.rfind("}") + 1
+        json_str = respuesta[inicio:fin]
+        workflow = json.loads(json_str)
+        return {"texto": "JSON generado correctamente", "workflow_json": workflow}
+    except:
+        return {"texto": respuesta, "workflow_json": None}
 
-    return {
-        "name": "Base Restaurante",
-        "nodes": [
-            {
-                "parameters": {
-                    "path": "pedido",
-                    "httpMethod": "POST"
-                },
-                "name": "Webhook",
-                "type": "n8n-nodes-base.webhook",
-                "position": [200, 300]
-            },
-            {
-                "parameters": {
-                    "operation": "read",
-                    "sheetId": "REEMPLAZAR"
-                },
-                "name": "Google Sheets",
-                "type": "n8n-nodes-base.googleSheets",
-                "position": [400, 300]
-            }
-        ],
-        "connections": {
-            "Webhook": {
-                "main": [[{"node": "Google Sheets"}]]
-            }
-        }
-    }
+# 🔥 VALIDADOR JSON
+def validar_workflow(workflow):
+    if not workflow:
+        return False
 
-# ================================
-# 🚀 N8N
-# ================================
-def crear_n8n(wf):
+    if "nodes" not in workflow or "connections" not in workflow:
+        return False
+
+    if len(workflow["nodes"]) < 2:
+        return False
+
+    return True
+
+# 🔥 AUTO FIX BÁSICO
+def auto_fix_workflow(workflow):
+    if not workflow:
+        return workflow
+
+    for node in workflow.get("nodes", []):
+        if "position" not in node:
+            node["position"] = [300, 300]
+
+    return workflow
+
+# 🔥 CREAR EN N8N
+def crear_workflow_n8n(workflow):
     try:
         r = requests.post(
             f"{N8N_URL}/api/v1/workflows",
@@ -119,117 +113,90 @@ def crear_n8n(wf):
                 "X-N8N-API-KEY": N8N_API_KEY,
                 "Content-Type": "application/json"
             },
-            json=wf
+            json=workflow
         )
-        return r.text
+        return r.json()
     except Exception as e:
-        return str(e)
+        return {"error": str(e)}
 
-# ================================
-# 🤖 BOT
-# ================================
-async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+estado = {}
 
-    if update.effective_user.id != ALLOWED_USER:
+# 🚀 MOTOR PRINCIPAL
+async def procesar(update, context, texto):
+    uid = update.effective_user.id
+
+    await update.message.reply_text("🧠 CLAW PRO activado...")
+
+    # 🔥 PRIMER INTENTO
+    resultado = llamar_ia(texto)
+
+    # 🔥 MODO DIOS AUTOMÁTICO
+    if not resultado["workflow_json"]:
+        await update.message.reply_text("⚠ IA falló → activando MODO DIOS...")
+
+        prompt = f"CREA UN WORKFLOW N8N FUNCIONAL: {texto}"
+        resultado = llamar_ia(prompt)
+
+    workflow = resultado["workflow_json"]
+
+    # 🔥 VALIDACIÓN
+    if not validar_workflow(workflow):
+        await update.message.reply_text("⚠ Corrigiendo workflow...")
+        workflow = auto_fix_workflow(workflow)
+
+    if not workflow:
+        await update.message.reply_text("❌ No se pudo generar workflow")
         return
 
-    text = update.message.text
+    estado[uid] = workflow
 
-    await update.message.chat.send_action(ChatAction.TYPING)
-
-    # ============================
-    # 🧠 MULTI-AGENTE VISUAL
-    # ============================
-    fases = [
-        "🧠 ANALISTA...",
-        "🏗 ARQUITECTO...",
-        "🎨 DISEÑADOR...",
-        "🔍 VALIDADOR...",
-        "⚙️ EJECUTOR...",
-        "💰 OPTIMIZADOR..."
-    ]
-
-    for f in fases:
-        await update.message.reply_text(f)
-        await asyncio.sleep(0.3)
-
-    # ============================
-    # 🧠 IA
-    # ============================
-    wf, texto_ia = llamar_ia(text)
-
-    if not wf:
-        await update.message.reply_text("⚠ IA falló → usando fallback")
-        wf = workflow_base()
-
-    context.user_data["workflow"] = wf
-
-    botones = [
+    kb = [
         [
             InlineKeyboardButton("🚀 Crear en n8n", callback_data="crear"),
-            InlineKeyboardButton("📄 Ver JSON", callback_data="json")
+            InlineKeyboardButton("📄 Ver JSON", callback_data="ver")
         ],
         [
-            InlineKeyboardButton("🧠 Mejorar (modo dios)", callback_data="mejorar")
+            InlineKeyboardButton("🔄 Regenerar", callback_data="regen")
         ]
     ]
 
-    await update.message.reply_text(
-        "🚀 Workflow listo ¿Qué deseas hacer?",
-        reply_markup=InlineKeyboardMarkup(botones)
-    )
+    await update.message.reply_text("🚀 Workflow listo", reply_markup=InlineKeyboardMarkup(kb))
 
-# ================================
-# 🔘 BOTONES
-# ================================
+# 🎛 BOTONES
 async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     query = update.callback_query
     await query.answer()
 
-    wf = context.user_data.get("workflow")
+    uid = query.from_user.id
 
-    if query.data == "crear":
+    if uid not in estado:
+        await query.edit_message_text("No hay workflow")
+        return
 
-        res = crear_n8n(wf)
+    if query.data == "ver":
+        txt = json.dumps(estado[uid], indent=2)
+        await context.bot.send_message(chat_id=query.message.chat.id, text=f"```json\n{txt[:4000]}\n```", parse_mode="Markdown")
 
-        await query.edit_message_text("✅ Creado en n8n\n\nAhora configura:\n- WhatsApp API\n- Gmail\n- OCR")
+    elif query.data == "crear":
+        res = crear_workflow_n8n(estado[uid])
+        await context.bot.send_message(chat_id=query.message.chat.id, text=f"Resultado: {res}")
 
-    elif query.data == "json":
+    elif query.data == "regen":
+        await query.edit_message_text("🔄 Regenerando...")
+        await procesar(query, context, "Mejora el workflow anterior")
 
-        txt = json.dumps(wf, indent=2)
+# 📩 MENSAJES
+async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ALLOWED_USER:
+        return
 
-        for i in range(0, len(txt), 4000):
-            await query.message.reply_text(txt[i:i+4000])
+    await procesar(update, context, update.message.text)
 
-    elif query.data == "mejorar":
-
-        await query.edit_message_text("🧠 MODO DIOS REAL ACTIVADO...")
-
-        prompt = "Optimiza este workflow para que sea vendible:\n" + json.dumps(wf)
-
-        nuevo_wf, _ = llamar_ia(prompt)
-
-        if nuevo_wf:
-            context.user_data["workflow"] = nuevo_wf
-            await query.message.reply_text("🔥 Workflow mejorado")
-        else:
-            await query.message.reply_text("⚠ No se pudo mejorar")
-
-# ================================
-# ▶️ START
-# ================================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔥 CLAW MODO DIOS ACTIVO")
-
-# ================================
-# 🚀 RUN
-# ================================
+# 🚀 INICIO
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
-app.add_handler(CommandHandler("start", start))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 app.add_handler(CallbackQueryHandler(botones))
 
-print("🔥 BOT NIVEL DIOS CORRIENDO")
+print("🔥 CLAW PRO RUNNING")
 app.run_polling()
