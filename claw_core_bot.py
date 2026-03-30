@@ -15,47 +15,34 @@ from telegram.ext import (
     filters
 )
 
-# ✅ FIX COMILLAS
+# ✅ FIX COMILLAS (ERROR ORIGINAL)
 load_dotenv("/home/mau/claw_core/.env")
 
-TELEGRAM_TOKEN     = os.getenv("TELEGRAM_TOKEN")
-ALLOWED_USER       = int(os.getenv("ALLOWED_USER"))
-N8N_URL            = os.getenv("N8N_URL")
-N8N_API_KEY        = os.getenv("N8N_API_KEY")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+ALLOWED_USER = int(os.getenv("ALLOWED_USER"))
+N8N_URL = os.getenv("N8N_URL")
+N8N_API_KEY = os.getenv("N8N_API_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 # ================================
-# 🧠 PROMPT INTELIGENTE (MEJORADO)
+# 🧠 PROMPT MODO BRUTAL
 # ================================
 SYSTEM_PROMPT = """
-Eres CLAW MODO BRUTAL.
+Eres CLAW, sistema experto en automatización con n8n.
 
-OBJETIVO:
-Crear workflows reales, funcionales y COMPLETOS para n8n.
+Debes:
+- Crear workflows COMPLETOS
+- Conectar TODOS los nodos
+- No dejar nodos sueltos
+- Usar nodos reales de n8n
 
-MULTIAGENTE:
-[ANALISTA] entiende negocio
-[ARQUITECTO] define nodos
-[DISENADOR] crea JSON
-[VALIDADOR] revisa errores
-[EJECUTOR] define APIs
-[OPTIMIZADOR] deja listo para vender
-
-REGLAS:
-- SIEMPRE devolver JSON válido
-- SIEMPRE conectar TODOS los nodos
-- NUNCA devolver workflow incompleto
-- Si falta info → asumir valores por defecto funcionales
-
-IMPORTANTE:
-Responder SIEMPRE con:
-
-1. Explicación breve
+Formato:
+1. Explicación corta
 2. JSON entre ```json ... ```
 """
 
 # ================================
-# 🤖 IA ROBUSTA (FIX ERROR 'choices')
+# 🤖 IA (ARREGLADA)
 # ================================
 def llamar_ia(prompt):
     try:
@@ -77,6 +64,7 @@ def llamar_ia(prompt):
 
         data = r.json()
 
+        # 🔥 FIX ERROR 'choices'
         if "choices" not in data:
             return {"texto": str(data), "workflow_json": None}
 
@@ -87,17 +75,14 @@ def llamar_ia(prompt):
 
     # 🔥 EXTRAER JSON
     workflow_json = None
-    if "```" in respuesta:
-        try:
-            json_str = respuesta.split("```json")[-1].split("```")[0]
+    try:
+        if "```json" in respuesta:
+            json_str = respuesta.split("```json")[1].split("```")[0]
             workflow_json = json.loads(json_str)
-        except:
-            workflow_json = None
+    except:
+        workflow_json = None
 
-    return {
-        "texto": respuesta,
-        "workflow_json": workflow_json
-    }
+    return {"texto": respuesta, "workflow_json": workflow_json}
 
 # ================================
 # 🔥 FALLBACK (SI IA FALLA)
@@ -131,9 +116,9 @@ def workflow_fallback():
     }
 
 # ================================
-# 🚀 N8N
+# 🚀 CREAR EN N8N
 # ================================
-def crear_workflow(workflow):
+def crear_workflow_n8n(workflow):
     try:
         r = requests.post(
             f"{N8N_URL}/api/v1/workflows",
@@ -141,28 +126,40 @@ def crear_workflow(workflow):
                 "X-N8N-API-KEY": N8N_API_KEY,
                 "Content-Type": "application/json"
             },
-            json=workflow
+            json=workflow,
+            timeout=15
         )
         return r.json()
     except Exception as e:
         return {"error": str(e)}
 
 # ================================
-# 🤖 TELEGRAM
+# 🧠 MEMORIA
+# ================================
+estado = {}
+
+def guardar(uid, key, value):
+    if uid not in estado:
+        estado[uid] = {}
+    estado[uid][key] = value
+
+def obtener(uid, key):
+    return estado.get(uid, {}).get(key)
+
+# ================================
+# 🤖 BOT
 # ================================
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ALLOWED_USER:
         return
 
     texto = update.message.text
+    uid = update.effective_user.id
+    chat_id = update.effective_chat.id
 
-    # 🔥 EFECTO ESCRIBIENDO
-    await context.bot.send_chat_action(
-        chat_id=update.effective_chat.id,
-        action=ChatAction.TYPING
-    )
+    # 🔥 ESCRIBIENDO
+    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
-    # MULTIAGENTE VISUAL
     fases = [
         "🧠 ANALISTA...",
         "🏗 ARQUITECTO...",
@@ -174,27 +171,66 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     for f in fases:
         await update.message.reply_text(f)
-        await asyncio.sleep(0.4)
+        await asyncio.sleep(0.3)
 
     resultado = llamar_ia(texto)
 
-    # 🔥 SI IA FALLA → FALLBACK
-    if not resultado["workflow_json"]:
-        await update.message.reply_text("⚠ IA falló → usando fallback funcional")
-        wf = workflow_fallback()
-    else:
+    if resultado["texto"]:
+        await update.message.reply_text(resultado["texto"][:3000])
+
+    if resultado["workflow_json"]:
         wf = resultado["workflow_json"]
+    else:
+        await update.message.reply_text("⚠ IA falló → usando fallback")
+        wf = workflow_fallback()
 
-    crear_workflow(wf)
+    guardar(uid, "wf", wf)
 
-    await update.message.reply_text("🚀 Workflow creado correctamente")
+    botones = [
+        [
+            InlineKeyboardButton("Crear en n8n", callback_data="crear"),
+            InlineKeyboardButton("Ver JSON", callback_data="json")
+        ]
+    ]
+
+    await update.message.reply_text(
+        "🚀 Workflow listo ¿Qué deseas hacer?",
+        reply_markup=InlineKeyboardMarkup(botones)
+    )
+
+# ================================
+# 🔘 BOTONES
+# ================================
+async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    uid = query.from_user.id
+    wf = obtener(uid, "wf")
+
+    if not wf:
+        await query.edit_message_text("No hay workflow")
+        return
+
+    if query.data == "crear":
+        res = crear_workflow_n8n(wf)
+        await query.edit_message_text("✅ Creado en n8n")
+
+    elif query.data == "json":
+        txt = json.dumps(wf, indent=2, ensure_ascii=False)
+        await query.message.reply_text(f"```json\n{txt[:3900]}\n```")
 
 # ================================
 # ▶️ START
 # ================================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🔥 CLAW listo (modo brutal)")
+
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
+app.add_handler(CommandHandler("start", start))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+app.add_handler(CallbackQueryHandler(botones))
 
-print("🔥 CLAW MODO BRUTAL ACTIVO")
+print("🔥 BOT ACTIVO")
 app.run_polling()
