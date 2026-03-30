@@ -15,110 +15,130 @@ from telegram.ext import (
     filters
 )
 
-# ✅ FIX COMILLAS (ERROR ORIGINAL)
+# ================================
+# 🔐 ENV
+# ================================
 load_dotenv("/home/mau/claw_core/.env")
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-ALLOWED_USER = int(os.getenv("ALLOWED_USER"))
-N8N_URL = os.getenv("N8N_URL")
-N8N_API_KEY = os.getenv("N8N_API_KEY")
+TELEGRAM_TOKEN     = os.getenv("TELEGRAM_TOKEN")
+ALLOWED_USER       = int(os.getenv("ALLOWED_USER"))
+N8N_URL            = os.getenv("N8N_URL")
+N8N_API_KEY        = os.getenv("N8N_API_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 # ================================
-# 🧠 PROMPT MODO BRUTAL
+# 🧠 IA PROMPT
 # ================================
-SYSTEM_PROMPT = """
-Eres CLAW, sistema experto en automatización con n8n.
+SYSTEM_PROMPT = """Eres CLAW modo brutal.
+Creas workflows n8n reales, completos, conectados y funcionales.
+Si faltan credenciales, NO generas workflow.
+Primero las pides.
 
-Debes:
-- Crear workflows COMPLETOS
-- Conectar TODOS los nodos
-- No dejar nodos sueltos
-- Usar nodos reales de n8n
-
-Formato:
-1. Explicación corta
-2. JSON entre ```json ... ```
+Reglas:
+- Nada de nodos sueltos
+- JSON válido
+- Conexiones completas
 """
 
 # ================================
-# 🤖 IA (ARREGLADA)
+# 🧠 IA
 # ================================
-def llamar_ia(prompt):
+def llamar_ia(mensaje):
     try:
         r = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
             headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Authorization": "Bearer " + OPENROUTER_API_KEY,
                 "Content-Type": "application/json"
             },
             json={
-                "model": "openai/gpt-4o-mini",
+                "model": "anthropic/claude-haiku-3",
                 "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt}
+                    {"role": "user", "content": mensaje}
                 ]
             },
             timeout=60
         )
-
         data = r.json()
-
-        # 🔥 FIX ERROR 'choices'
-        if "choices" not in data:
-            return {"texto": str(data), "workflow_json": None}
-
-        respuesta = data["choices"][0]["message"]["content"]
-
+        return data["choices"][0]["message"]["content"]
     except Exception as e:
-        return {"texto": f"Error IA: {e}", "workflow_json": None}
-
-    # 🔥 EXTRAER JSON
-    workflow_json = None
-    try:
-        if "```json" in respuesta:
-            json_str = respuesta.split("```json")[1].split("```")[0]
-            workflow_json = json.loads(json_str)
-    except:
-        workflow_json = None
-
-    return {"texto": respuesta, "workflow_json": workflow_json}
+        return "Error IA: " + str(e)
 
 # ================================
-# 🔥 FALLBACK (SI IA FALLA)
+# 🧠 ARQUITECTO REAL
 # ================================
-def workflow_fallback():
+def detectar_credenciales(text):
+    text = text.lower()
+    needs = []
+
+    if "whatsapp" in text:
+        needs.append("whatsapp")
+
+    if "correo" in text or "gmail" in text or "banco" in text:
+        needs.append("gmail")
+
+    if "imagen" in text or "captura" in text:
+        needs.append("ocr")
+
+    return needs
+
+def faltantes(context, needs):
+    return [n for n in needs if n not in context.user_data]
+
+# ================================
+# 🏗 WORKFLOW REAL
+# ================================
+def workflow_pagos():
     return {
-        "name": "Fallback Restaurante",
+        "name": "Validacion Pagos PRO",
         "nodes": [
             {
-                "parameters": {"path": "pedido", "httpMethod": "POST"},
+                "parameters": {"path": "pagos", "httpMethod": "POST"},
                 "id": "1",
                 "name": "Webhook",
                 "type": "n8n-nodes-base.webhook",
-                "typeVersion": 2,
                 "position": [200, 300]
             },
             {
-                "parameters": {"operation": "read", "sheetId": "ID"},
+                "parameters": {
+                    "url": "https://api.ocr.space/parse/image",
+                    "method": "POST"
+                },
                 "id": "2",
-                "name": "Google Sheets",
-                "type": "n8n-nodes-base.googleSheets",
-                "typeVersion": 4,
+                "name": "OCR",
+                "type": "n8n-nodes-base.httpRequest",
                 "position": [400, 300]
+            },
+            {
+                "parameters": {"resource": "message", "operation": "getAll"},
+                "id": "3",
+                "name": "Gmail",
+                "type": "n8n-nodes-base.gmail",
+                "position": [600, 300]
+            },
+            {
+                "parameters": {
+                    "functionCode": "return [{json:{match:true}}];"
+                },
+                "id": "4",
+                "name": "Validar",
+                "type": "n8n-nodes-base.function",
+                "position": [800, 300]
             }
         ],
         "connections": {
-            "Webhook": {
-                "main": [[{"node": "Google Sheets", "type": "main", "index": 0}]]
-            }
-        }
+            "Webhook": {"main": [[{"node": "OCR"}]]},
+            "OCR": {"main": [[{"node": "Gmail"}]]},
+            "Gmail": {"main": [[{"node": "Validar"}]]}
+        },
+        "settings": {}
     }
 
 # ================================
-# 🚀 CREAR EN N8N
+# 🚀 N8N
 # ================================
-def crear_workflow_n8n(workflow):
+def crear_n8n(wf):
     try:
         r = requests.post(
             f"{N8N_URL}/api/v1/workflows",
@@ -126,40 +146,58 @@ def crear_workflow_n8n(workflow):
                 "X-N8N-API-KEY": N8N_API_KEY,
                 "Content-Type": "application/json"
             },
-            json=workflow,
-            timeout=15
+            json=wf
         )
-        return r.json()
+        return r.text
     except Exception as e:
-        return {"error": str(e)}
-
-# ================================
-# 🧠 MEMORIA
-# ================================
-estado = {}
-
-def guardar(uid, key, value):
-    if uid not in estado:
-        estado[uid] = {}
-    estado[uid][key] = value
-
-def obtener(uid, key):
-    return estado.get(uid, {}).get(key)
+        return str(e)
 
 # ================================
 # 🤖 BOT
 # ================================
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     if update.effective_user.id != ALLOWED_USER:
         return
 
-    texto = update.message.text
-    uid = update.effective_user.id
-    chat_id = update.effective_chat.id
+    text = update.message.text.lower()
 
-    # 🔥 ESCRIBIENDO
-    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+    await update.message.chat.send_action(ChatAction.TYPING)
 
+    # ============================
+    # 📥 GUARDAR RESPUESTAS
+    # ============================
+    for key in ["whatsapp", "gmail", "ocr"]:
+        if context.user_data.get("esperando_" + key):
+            context.user_data[key] = text
+            context.user_data["esperando_" + key] = False
+            await update.message.reply_text(f"✅ Guardado {key}")
+            return
+
+    # ============================
+    # 🧠 DETECTAR
+    # ============================
+    needs = detectar_credenciales(text)
+    falt = faltantes(context, needs)
+
+    if falt:
+        for f in falt:
+            context.user_data["esperando_" + f] = True
+
+            if f == "whatsapp":
+                await update.message.reply_text("📱 ¿Tienes API WhatsApp? SI/NO")
+
+            if f == "gmail":
+                await update.message.reply_text("📧 Dame correo + app password")
+
+            if f == "ocr":
+                await update.message.reply_text("🖼 Dame OCR API KEY")
+
+        return
+
+    # ============================
+    # 🧠 MULTI-AGENTE VISUAL
+    # ============================
     fases = [
         "🧠 ANALISTA...",
         "🏗 ARQUITECTO...",
@@ -173,28 +211,19 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f)
         await asyncio.sleep(0.3)
 
-    resultado = llamar_ia(texto)
+    # ============================
+    # 🚀 CREAR WORKFLOW
+    # ============================
+    wf = workflow_pagos()
+    res = crear_n8n(wf)
 
-    if resultado["texto"]:
-        await update.message.reply_text(resultado["texto"][:3000])
-
-    if resultado["workflow_json"]:
-        wf = resultado["workflow_json"]
-    else:
-        await update.message.reply_text("⚠ IA falló → usando fallback")
-        wf = workflow_fallback()
-
-    guardar(uid, "wf", wf)
-
-    botones = [
-        [
-            InlineKeyboardButton("Crear en n8n", callback_data="crear"),
-            InlineKeyboardButton("Ver JSON", callback_data="json")
-        ]
-    ]
+    botones = [[
+        InlineKeyboardButton("✅ OK", callback_data="ok"),
+        InlineKeyboardButton("❌ Cancelar", callback_data="no")
+    ]]
 
     await update.message.reply_text(
-        "🚀 Workflow listo ¿Qué deseas hacer?",
+        "🚀 Workflow creado\nConfigura credenciales en n8n",
         reply_markup=InlineKeyboardMarkup(botones)
     )
 
@@ -205,32 +234,26 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    uid = query.from_user.id
-    wf = obtener(uid, "wf")
+    if query.data == "ok":
+        await query.edit_message_text("✅ Ejecutado")
 
-    if not wf:
-        await query.edit_message_text("No hay workflow")
-        return
-
-    if query.data == "crear":
-        res = crear_workflow_n8n(wf)
-        await query.edit_message_text("✅ Creado en n8n")
-
-    elif query.data == "json":
-        txt = json.dumps(wf, indent=2, ensure_ascii=False)
-        await query.message.reply_text(f"```json\n{txt[:3900]}\n```")
+    elif query.data == "no":
+        await query.edit_message_text("❌ Cancelado")
 
 # ================================
 # ▶️ START
 # ================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔥 CLAW listo (modo brutal)")
+    await update.message.reply_text("CLAW PRO ACTIVADO")
 
+# ================================
+# 🚀 RUN
+# ================================
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 app.add_handler(CallbackQueryHandler(botones))
 
-print("🔥 BOT ACTIVO")
+print("🔥 CLAW PRO RUNNING")
 app.run_polling()
