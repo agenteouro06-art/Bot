@@ -11,11 +11,9 @@ from telegram.ext import (
     MessageHandler,
     ContextTypes,
     CallbackQueryHandler,
-    CommandHandler,
     filters
 )
 
-# ✅ CORRECCIÓN IMPORTANTE (comillas normales)
 load_dotenv("/home/mau/claw_core/.env")
 
 TELEGRAM_TOKEN     = os.getenv("TELEGRAM_TOKEN")
@@ -24,25 +22,46 @@ N8N_URL            = os.getenv("N8N_URL")
 N8N_API_KEY        = os.getenv("N8N_API_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-# 🧠 PROMPT MEJORADO (modo arquitecto real)
-SYSTEM_PROMPT = """
-Eres CLAW PRO.
+# 🔥 PLANTILLAS BASE (tipo marketplace)
+PLANTILLAS = {
+    "whatsapp_ocr": {
+        "name": "WhatsApp OCR Base",
+        "nodes": [
+            {
+                "id": "1",
+                "name": "Webhook",
+                "type": "n8n-nodes-base.webhook",
+                "typeVersion": 2,
+                "position": [300, 300],
+                "parameters": {
+                    "path": "whatsapp-in",
+                    "httpMethod": "POST"
+                }
+            },
+            {
+                "id": "2",
+                "name": "HTTP OCR",
+                "type": "n8n-nodes-base.httpRequest",
+                "typeVersion": 4,
+                "position": [600, 300],
+                "parameters": {
+                    "url": "https://api.ocr.space/parse/image",
+                    "method": "POST"
+                }
+            }
+        ],
+        "connections": {
+            "Webhook": {
+                "main": [[{"node": "HTTP OCR", "type": "main", "index": 0}]]
+            }
+        },
+        "settings": {},
+        "active": False
+    }
+}
 
-Especialista en crear workflows REALES para n8n.
-
-REGLAS CRITICAS:
-- SOLO JSON VALIDO
-- SIN TEXTO FUERA DEL JSON
-- TODOS LOS NODOS CONECTADOS
-- USAR NODOS REALES DE N8N
-- typeVersion correcto
-- LISTO PARA IMPORTAR
-
-SI FALLAS → REINTENTA HASTA LOGRAR JSON VALIDO
-"""
-
-# 🔥 IA
-def llamar_ia(prompt):
+# 🧠 IA (SOLO ADAPTA, NO INVENTA)
+def llamar_ia(prompt, base):
     try:
         r = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
@@ -53,60 +72,49 @@ def llamar_ia(prompt):
             json={
                 "model": "openai/gpt-4o-mini",
                 "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt}
+                    {"role": "system", "content": "Modifica el JSON sin romper estructura de n8n"},
+                    {"role": "user", "content": f"BASE:\n{json.dumps(base)}\n\nOBJETIVO:\n{prompt}"}
                 ]
-            },
-            timeout=60
+            }
         )
 
         data = r.json()
-
         if "choices" not in data:
-            return {"texto": str(data), "workflow_json": None}
+            return None
 
-        respuesta = data["choices"][0]["message"]["content"]
+        txt = data["choices"][0]["message"]["content"]
 
-    except Exception as e:
-        return {"texto": str(e), "workflow_json": None}
+        inicio = txt.find("{")
+        fin = txt.rfind("}") + 1
+        return json.loads(txt[inicio:fin])
 
-    # 🔍 EXTRAER JSON
-    try:
-        inicio = respuesta.find("{")
-        fin = respuesta.rfind("}") + 1
-        json_str = respuesta[inicio:fin]
-        workflow = json.loads(json_str)
-        return {"texto": "JSON generado correctamente", "workflow_json": workflow}
     except:
-        return {"texto": respuesta, "workflow_json": None}
+        return None
 
-# 🔥 VALIDADOR JSON
-def validar_workflow(workflow):
+# 🔥 NORMALIZADOR PRO
+def normalizar(workflow):
     if not workflow:
-        return False
+        return None
 
-    if "nodes" not in workflow or "connections" not in workflow:
-        return False
+    workflow.setdefault("name", "CLAW Flow")
+    workflow.setdefault("nodes", [])
+    workflow.setdefault("connections", {})
+    workflow.setdefault("settings", {})
+    workflow.setdefault("active", False)
 
-    if len(workflow["nodes"]) < 2:
-        return False
-
-    return True
-
-# 🔥 AUTO FIX BÁSICO
-def auto_fix_workflow(workflow):
-    if not workflow:
-        return workflow
-
-    for node in workflow.get("nodes", []):
-        if "position" not in node:
-            node["position"] = [300, 300]
+    for node in workflow["nodes"]:
+        node.setdefault("id", node.get("name"))
+        node.setdefault("parameters", {})
+        node.setdefault("position", [300, 300])
+        node.setdefault("typeVersion", 1)
 
     return workflow
 
 # 🔥 CREAR EN N8N
-def crear_workflow_n8n(workflow):
+def crear(workflow):
     try:
+        workflow = normalizar(workflow)
+
         r = requests.post(
             f"{N8N_URL}/api/v1/workflows",
             headers={
@@ -115,38 +123,44 @@ def crear_workflow_n8n(workflow):
             },
             json=workflow
         )
+
         return r.json()
     except Exception as e:
         return {"error": str(e)}
 
 estado = {}
 
-# 🚀 MOTOR PRINCIPAL
+# 🚀 MOTOR
 async def procesar(update, context, texto):
     uid = update.effective_user.id
 
-    await update.message.reply_text("🧠 CLAW PRO activado...")
+    await update.message.reply_text("🧠 ANALISTA...")
+    await asyncio.sleep(0.3)
+    await update.message.reply_text("🏗 ARQUITECTO...")
+    await asyncio.sleep(0.3)
+    await update.message.reply_text("🎨 DISEÑADOR...")
+    await asyncio.sleep(0.3)
+    await update.message.reply_text("🔍 VALIDADOR...")
+    await asyncio.sleep(0.3)
+    await update.message.reply_text("⚙ EJECUTOR...")
+    await asyncio.sleep(0.3)
+    await update.message.reply_text("💰 OPTIMIZADOR...")
 
-    # 🔥 PRIMER INTENTO
-    resultado = llamar_ia(texto)
+    # 🔥 SELECCIÓN DE PLANTILLA
+    if "whatsapp" in texto.lower():
+        base = PLANTILLAS["whatsapp_ocr"]
+    else:
+        base = list(PLANTILLAS.values())[0]
 
-    # 🔥 MODO DIOS AUTOMÁTICO
-    if not resultado["workflow_json"]:
-        await update.message.reply_text("⚠ IA falló → activando MODO DIOS...")
+    # 🔥 IA ADAPTA (NO CREA)
+    workflow = llamar_ia(texto, base)
 
-        prompt = f"CREA UN WORKFLOW N8N FUNCIONAL: {texto}"
-        resultado = llamar_ia(prompt)
-
-    workflow = resultado["workflow_json"]
-
-    # 🔥 VALIDACIÓN
-    if not validar_workflow(workflow):
-        await update.message.reply_text("⚠ Corrigiendo workflow...")
-        workflow = auto_fix_workflow(workflow)
-
+    # 🔥 FALLBACK REAL
     if not workflow:
-        await update.message.reply_text("❌ No se pudo generar workflow")
-        return
+        await update.message.reply_text("⚠ IA falló → usando plantilla base")
+        workflow = base
+
+    workflow = normalizar(workflow)
 
     estado[uid] = workflow
 
@@ -169,21 +183,17 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     uid = query.from_user.id
 
-    if uid not in estado:
-        await query.edit_message_text("No hay workflow")
-        return
-
     if query.data == "ver":
         txt = json.dumps(estado[uid], indent=2)
-        await context.bot.send_message(chat_id=query.message.chat.id, text=f"```json\n{txt[:4000]}\n```", parse_mode="Markdown")
+        await context.bot.send_message(query.message.chat.id, f"```json\n{txt[:4000]}\n```", parse_mode="Markdown")
 
     elif query.data == "crear":
-        res = crear_workflow_n8n(estado[uid])
-        await context.bot.send_message(chat_id=query.message.chat.id, text=f"Resultado: {res}")
+        res = crear(estado[uid])
+        await context.bot.send_message(query.message.chat.id, f"Resultado:\n{res}")
 
     elif query.data == "regen":
         await query.edit_message_text("🔄 Regenerando...")
-        await procesar(query, context, "Mejora el workflow anterior")
+        await procesar(query, context, "Mejora el flujo")
 
 # 📩 MENSAJES
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -198,5 +208,5 @@ app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 app.add_handler(CallbackQueryHandler(botones))
 
-print("🔥 CLAW PRO RUNNING")
+print("🔥 CLAW MARKETPLACE MODE")
 app.run_polling()
