@@ -1,195 +1,202 @@
-import os
-import json
-import asyncio
 import requests
-from dotenv import load_dotenv
+import json
+import time
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.constants import ChatAction
-from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, CallbackQueryHandler, filters
+N8N_URL = "http://192.168.101.31:5678/api/v1/workflows"
+N8N_API_KEY = "TU_API_KEY_AQUI"
 
-# 🔥 CARGAR ENV (CORREGIDO)
-load_dotenv("/home/mau/claw_core/.env")
-
-TELEGRAM_TOKEN     = os.getenv("TELEGRAM_TOKEN")
-ALLOWED_USER       = int(os.getenv("ALLOWED_USER"))
-N8N_URL            = os.getenv("N8N_URL")
-N8N_API_KEY        = os.getenv("N8N_API_KEY")
-
-# 🔥 PLANTILLA REAL FUNCIONAL (BASE SEGURA)
-BASE_WORKFLOW = {
-    "name": "CLAW Base Flow",
-    "nodes": [
-        {
-            "id": "1",
-            "name": "Webhook",
-            "type": "n8n-nodes-base.webhook",
-            "typeVersion": 2,
-            "position": [300, 300],
-            "parameters": {
-                "path": "claw-webhook",
-                "httpMethod": "POST"
-            }
-        },
-        {
-            "id": "2",
-            "name": "Set",
-            "type": "n8n-nodes-base.set",
-            "typeVersion": 2,
-            "position": [600, 300],
-            "parameters": {
-                "values": {
-                    "string": [
-                        {
-                            "name": "mensaje",
-                            "value": "Workflow funcionando"
-                        }
-                    ]
-                }
-            }
-        }
-    ],
-    "connections": {
-        "Webhook": {
-            "main": [
-                [
-                    {
-                        "node": "Set",
-                        "type": "main",
-                        "index": 0
-                    }
-                ]
-            ]
-        }
-    },
-    "settings": {}
+HEADERS = {
+    "X-N8N-API-KEY": N8N_API_KEY,
+    "Content-Type": "application/json"
 }
 
-estado = {}
-
-# 🔥 NORMALIZAR (ANTI-ERRORES)
-def normalizar(workflow):
-    if not workflow:
-        return None
-
-    workflow["name"] = workflow.get("name", "CLAW Flow")
-    workflow["nodes"] = workflow.get("nodes", [])
-    workflow["connections"] = workflow.get("connections", {})
-    workflow["settings"] = workflow.get("settings", {})
-
-    # ❌ ELIMINAR CAMPOS PROHIBIDOS
-    workflow.pop("active", None)
-    workflow.pop("id", None)
-
-    for node in workflow["nodes"]:
-        node["id"] = node.get("id", node.get("name"))
-        node["parameters"] = node.get("parameters", {})
-        node["position"] = node.get("position", [300, 300])
-        node["typeVersion"] = node.get("typeVersion", 1)
-
-    return workflow
-
-# 🔥 CREAR WORKFLOW EN N8N (FUNCIONAL REAL)
-def crear_workflow(workflow):
-    try:
-        workflow = normalizar(workflow)
-
-        r = requests.post(
-            f"{N8N_URL}/api/v1/workflows",
-            headers={
-                "X-N8N-API-KEY": N8N_API_KEY,
-                "Content-Type": "application/json"
+# =========================
+# 🧠 GENERADOR REAL (NO INVENTA)
+# =========================
+def generar_workflow_real():
+    return {
+        "name": "CLAW WhatsApp OCR Validator",
+        "nodes": [
+            {
+                "id": "1",
+                "name": "Webhook",
+                "type": "n8n-nodes-base.webhook",
+                "typeVersion": 1,
+                "position": [200, 300],
+                "parameters": {
+                    "path": "claw-whatsapp",
+                    "httpMethod": "POST",
+                    "responseMode": "onReceived"
+                }
             },
-            json=workflow,
-            timeout=20
-        )
+            {
+                "id": "2",
+                "name": "HTTP OCR",
+                "type": "n8n-nodes-base.httpRequest",
+                "typeVersion": 1,
+                "position": [500, 300],
+                "parameters": {
+                    "url": "https://api.ocr.space/parse/image",
+                    "method": "POST",
+                    "sendBinaryData": True
+                }
+            },
+            {
+                "id": "3",
+                "name": "Email Read",
+                "type": "n8n-nodes-base.emailReadImap",
+                "typeVersion": 1,
+                "position": [800, 300],
+                "parameters": {
+                    "mailbox": "INBOX"
+                }
+            },
+            {
+                "id": "4",
+                "name": "Comparar Datos",
+                "type": "n8n-nodes-base.function",
+                "typeVersion": 1,
+                "position": [1100, 300],
+                "parameters": {
+                    "functionCode": """
+const texto = $json["ParsedResults"]?.[0]?.ParsedText || "";
+const correo = $node["Email Read"].json?.text || "";
 
-        data = r.json()
+let match = false;
 
-        if r.status_code != 200:
-            return {"error": data}
+if (texto && correo) {
+    match = texto.includes(correo.substring(0, 10));
+}
 
-        return {"ok": True, "data": data}
-
-    except Exception as e:
-        return {"error": str(e)}
-
-# 🚀 MOTOR PRINCIPAL
-async def procesar(update, context, texto):
-    uid = update.effective_user.id
-
-    # 🧠 MUÑECOS (VISUAL PRO)
-    pasos = [
-        "🧠 ANALISTA...",
-        "🏗 ARQUITECTO...",
-        "🎨 DISEÑADOR...",
-        "🔍 VALIDADOR...",
-        "⚙ EJECUTOR...",
-        "💰 OPTIMIZADOR..."
-    ]
-
-    for p in pasos:
-        await update.message.reply_text(p)
-        await asyncio.sleep(0.3)
-
-    # 🔥 USAMOS SIEMPRE BASE FUNCIONAL
-    workflow = BASE_WORKFLOW.copy()
-
-    estado[uid] = workflow
-
-    kb = [
-        [
-            InlineKeyboardButton("🚀 Crear en n8n", callback_data="crear"),
-            InlineKeyboardButton("📄 Ver JSON", callback_data="ver")
+return [{ json: { match } }];
+"""
+                }
+            },
+            {
+                "id": "5",
+                "name": "IF Coincide",
+                "type": "n8n-nodes-base.if",
+                "typeVersion": 1,
+                "position": [1300, 300],
+                "parameters": {
+                    "conditions": {
+                        "boolean": [
+                            {
+                                "value1": "={{$json['match']}}",
+                                "operation": "isTrue"
+                            }
+                        ]
+                    }
+                }
+            },
+            {
+                "id": "6",
+                "name": "Responder WhatsApp",
+                "type": "n8n-nodes-base.httpRequest",
+                "typeVersion": 1,
+                "position": [1500, 200],
+                "parameters": {
+                    "url": "https://api.whatsapp.com/send",
+                    "method": "POST"
+                }
+            }
         ],
-        [
-            InlineKeyboardButton("🔄 Regenerar", callback_data="regen")
+        "connections": {
+            "Webhook": {
+                "main": [[{"node": "HTTP OCR", "type": "main", "index": 0}]]
+            },
+            "HTTP OCR": {
+                "main": [[{"node": "Email Read", "type": "main", "index": 0}]]
+            },
+            "Email Read": {
+                "main": [[{"node": "Comparar Datos", "type": "main", "index": 0}]]
+            },
+            "Comparar Datos": {
+                "main": [[{"node": "IF Coincide", "type": "main", "index": 0}]]
+            },
+            "IF Coincide": {
+                "main": [
+                    [{"node": "Responder WhatsApp", "type": "main", "index": 0}],
+                    []
+                ]
+            }
+        },
+        "settings": {}
+    }
+
+# =========================
+# 🔍 VALIDADOR JSON (MODO DIOS)
+# =========================
+def validar_json(workflow):
+    try:
+        json.dumps(workflow)
+        if "name" not in workflow:
+            raise Exception("Falta 'name'")
+        if "settings" not in workflow:
+            workflow["settings"] = {}
+        return True
+    except Exception as e:
+        print("❌ JSON inválido:", e)
+        return False
+
+# =========================
+# 🚀 CREAR WORKFLOW (CON REINTENTO)
+# =========================
+def crear_workflow():
+    workflow = generar_workflow_real()
+
+    if not validar_json(workflow):
+        print("⚠ Corrigiendo JSON...")
+        workflow["settings"] = {}
+
+    for intento in range(3):
+        try:
+            response = requests.post(
+                N8N_URL,
+                headers=HEADERS,
+                data=json.dumps(workflow)
+            )
+
+            if response.status_code in [200, 201]:
+                print("✅ WORKFLOW CREADO:")
+                print(response.json())
+                return
+
+            else:
+                print("⚠ Error:", response.text)
+
+        except Exception as e:
+            print("❌ Error conexión:", e)
+
+        time.sleep(2)
+
+    print("🔥 FALLÓ DESPUÉS DE 3 INTENTOS")
+
+# =========================
+# 🤖 BOTONES TELEGRAM FIX
+# =========================
+def botones():
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "🚀 Crear en n8n", "callback_data": "crear"},
+                {"text": "📄 Ver JSON", "callback_data": "ver_json"}
+            ],
+            [
+                {"text": "🔄 Regenerar", "callback_data": "regen"}
+            ]
         ]
-    ]
+    }
 
-    await update.message.reply_text(
-        "🚀 Workflow listo (base funcional garantizada)",
-        reply_markup=InlineKeyboardMarkup(kb)
-    )
+# =========================
+# 🧠 MODO DIOS
+# =========================
+def modo_dios():
+    print("🔥 CLAW MODO DIOS ACTIVADO")
+    crear_workflow()
 
-# 🎛 BOTONES
-async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    uid = query.from_user.id
-    chat_id = query.message.chat.id
-
-    if query.data == "ver":
-        txt = json.dumps(estado[uid], indent=2)
-        await context.bot.send_message(chat_id, f"```json\n{txt[:4000]}\n```", parse_mode="Markdown")
-
-    elif query.data == "crear":
-        await context.bot.send_message(chat_id, "🚀 Creando en n8n...")
-
-        res = crear_workflow(estado[uid])
-
-        if "ok" in res:
-            await context.bot.send_message(chat_id, f"✅ Creado correctamente:\n{res['data']}")
-        else:
-            await context.bot.send_message(chat_id, f"❌ Error:\n{res['error']}")
-
-    elif query.data == "regen":
-        await query.edit_message_text("🔄 Regenerando...")
-        await procesar(query, context, "regen")
-
-# 📩 MENSAJES
-async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ALLOWED_USER:
-        return
-
-    await procesar(update, context, update.message.text)
-
-# 🚀 INICIO BOT
-app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-app.add_handler(CallbackQueryHandler(botones))
-
-print("🔥 CLAW FUNCIONAL REAL INICIADO")
-app.run_polling()
+# =========================
+# ▶ EJECUCIÓN
+# =========================
+if __name__ == "__main__":
+    modo_dios()
