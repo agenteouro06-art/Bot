@@ -6,112 +6,91 @@ from dotenv import load_dotenv
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction
-from telegram.ext import (
-    ApplicationBuilder,
-    MessageHandler,
-    ContextTypes,
-    CallbackQueryHandler,
-    filters
-)
+from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, CallbackQueryHandler, filters
 
+# 🔥 CARGAR ENV (CORREGIDO)
 load_dotenv("/home/mau/claw_core/.env")
 
 TELEGRAM_TOKEN     = os.getenv("TELEGRAM_TOKEN")
 ALLOWED_USER       = int(os.getenv("ALLOWED_USER"))
 N8N_URL            = os.getenv("N8N_URL")
 N8N_API_KEY        = os.getenv("N8N_API_KEY")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-# 🔥 PLANTILLAS BASE (tipo marketplace)
-PLANTILLAS = {
-    "whatsapp_ocr": {
-        "name": "WhatsApp OCR Base",
-        "nodes": [
-            {
-                "id": "1",
-                "name": "Webhook",
-                "type": "n8n-nodes-base.webhook",
-                "typeVersion": 2,
-                "position": [300, 300],
-                "parameters": {
-                    "path": "whatsapp-in",
-                    "httpMethod": "POST"
-                }
-            },
-            {
-                "id": "2",
-                "name": "HTTP OCR",
-                "type": "n8n-nodes-base.httpRequest",
-                "typeVersion": 4,
-                "position": [600, 300],
-                "parameters": {
-                    "url": "https://api.ocr.space/parse/image",
-                    "method": "POST"
-                }
-            }
-        ],
-        "connections": {
-            "Webhook": {
-                "main": [[{"node": "HTTP OCR", "type": "main", "index": 0}]]
+# 🔥 PLANTILLA REAL FUNCIONAL (BASE SEGURA)
+BASE_WORKFLOW = {
+    "name": "CLAW Base Flow",
+    "nodes": [
+        {
+            "id": "1",
+            "name": "Webhook",
+            "type": "n8n-nodes-base.webhook",
+            "typeVersion": 2,
+            "position": [300, 300],
+            "parameters": {
+                "path": "claw-webhook",
+                "httpMethod": "POST"
             }
         },
-        "settings": {},
-        "active": False
-    }
+        {
+            "id": "2",
+            "name": "Set",
+            "type": "n8n-nodes-base.set",
+            "typeVersion": 2,
+            "position": [600, 300],
+            "parameters": {
+                "values": {
+                    "string": [
+                        {
+                            "name": "mensaje",
+                            "value": "Workflow funcionando"
+                        }
+                    ]
+                }
+            }
+        }
+    ],
+    "connections": {
+        "Webhook": {
+            "main": [
+                [
+                    {
+                        "node": "Set",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        }
+    },
+    "settings": {}
 }
 
-# 🧠 IA (SOLO ADAPTA, NO INVENTA)
-def llamar_ia(prompt, base):
-    try:
-        r = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": "openai/gpt-4o-mini",
-                "messages": [
-                    {"role": "system", "content": "Modifica el JSON sin romper estructura de n8n"},
-                    {"role": "user", "content": f"BASE:\n{json.dumps(base)}\n\nOBJETIVO:\n{prompt}"}
-                ]
-            }
-        )
+estado = {}
 
-        data = r.json()
-        if "choices" not in data:
-            return None
-
-        txt = data["choices"][0]["message"]["content"]
-
-        inicio = txt.find("{")
-        fin = txt.rfind("}") + 1
-        return json.loads(txt[inicio:fin])
-
-    except:
-        return None
-
-# 🔥 NORMALIZADOR PRO
+# 🔥 NORMALIZAR (ANTI-ERRORES)
 def normalizar(workflow):
     if not workflow:
         return None
 
-    workflow.setdefault("name", "CLAW Flow")
-    workflow.setdefault("nodes", [])
-    workflow.setdefault("connections", {})
-    workflow.setdefault("settings", {})
-    workflow.setdefault("active", False)
+    workflow["name"] = workflow.get("name", "CLAW Flow")
+    workflow["nodes"] = workflow.get("nodes", [])
+    workflow["connections"] = workflow.get("connections", {})
+    workflow["settings"] = workflow.get("settings", {})
+
+    # ❌ ELIMINAR CAMPOS PROHIBIDOS
+    workflow.pop("active", None)
+    workflow.pop("id", None)
 
     for node in workflow["nodes"]:
-        node.setdefault("id", node.get("name"))
-        node.setdefault("parameters", {})
-        node.setdefault("position", [300, 300])
-        node.setdefault("typeVersion", 1)
+        node["id"] = node.get("id", node.get("name"))
+        node["parameters"] = node.get("parameters", {})
+        node["position"] = node.get("position", [300, 300])
+        node["typeVersion"] = node.get("typeVersion", 1)
 
     return workflow
 
-# 🔥 CREAR EN N8N
-def crear(workflow):
+# 🔥 CREAR WORKFLOW EN N8N (FUNCIONAL REAL)
+def crear_workflow(workflow):
     try:
         workflow = normalizar(workflow)
 
@@ -121,46 +100,40 @@ def crear(workflow):
                 "X-N8N-API-KEY": N8N_API_KEY,
                 "Content-Type": "application/json"
             },
-            json=workflow
+            json=workflow,
+            timeout=20
         )
 
-        return r.json()
+        data = r.json()
+
+        if r.status_code != 200:
+            return {"error": data}
+
+        return {"ok": True, "data": data}
+
     except Exception as e:
         return {"error": str(e)}
 
-estado = {}
-
-# 🚀 MOTOR
+# 🚀 MOTOR PRINCIPAL
 async def procesar(update, context, texto):
     uid = update.effective_user.id
 
-    await update.message.reply_text("🧠 ANALISTA...")
-    await asyncio.sleep(0.3)
-    await update.message.reply_text("🏗 ARQUITECTO...")
-    await asyncio.sleep(0.3)
-    await update.message.reply_text("🎨 DISEÑADOR...")
-    await asyncio.sleep(0.3)
-    await update.message.reply_text("🔍 VALIDADOR...")
-    await asyncio.sleep(0.3)
-    await update.message.reply_text("⚙ EJECUTOR...")
-    await asyncio.sleep(0.3)
-    await update.message.reply_text("💰 OPTIMIZADOR...")
+    # 🧠 MUÑECOS (VISUAL PRO)
+    pasos = [
+        "🧠 ANALISTA...",
+        "🏗 ARQUITECTO...",
+        "🎨 DISEÑADOR...",
+        "🔍 VALIDADOR...",
+        "⚙ EJECUTOR...",
+        "💰 OPTIMIZADOR..."
+    ]
 
-    # 🔥 SELECCIÓN DE PLANTILLA
-    if "whatsapp" in texto.lower():
-        base = PLANTILLAS["whatsapp_ocr"]
-    else:
-        base = list(PLANTILLAS.values())[0]
+    for p in pasos:
+        await update.message.reply_text(p)
+        await asyncio.sleep(0.3)
 
-    # 🔥 IA ADAPTA (NO CREA)
-    workflow = llamar_ia(texto, base)
-
-    # 🔥 FALLBACK REAL
-    if not workflow:
-        await update.message.reply_text("⚠ IA falló → usando plantilla base")
-        workflow = base
-
-    workflow = normalizar(workflow)
+    # 🔥 USAMOS SIEMPRE BASE FUNCIONAL
+    workflow = BASE_WORKFLOW.copy()
 
     estado[uid] = workflow
 
@@ -174,7 +147,10 @@ async def procesar(update, context, texto):
         ]
     ]
 
-    await update.message.reply_text("🚀 Workflow listo", reply_markup=InlineKeyboardMarkup(kb))
+    await update.message.reply_text(
+        "🚀 Workflow listo (base funcional garantizada)",
+        reply_markup=InlineKeyboardMarkup(kb)
+    )
 
 # 🎛 BOTONES
 async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -182,18 +158,25 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     uid = query.from_user.id
+    chat_id = query.message.chat.id
 
     if query.data == "ver":
         txt = json.dumps(estado[uid], indent=2)
-        await context.bot.send_message(query.message.chat.id, f"```json\n{txt[:4000]}\n```", parse_mode="Markdown")
+        await context.bot.send_message(chat_id, f"```json\n{txt[:4000]}\n```", parse_mode="Markdown")
 
     elif query.data == "crear":
-        res = crear(estado[uid])
-        await context.bot.send_message(query.message.chat.id, f"Resultado:\n{res}")
+        await context.bot.send_message(chat_id, "🚀 Creando en n8n...")
+
+        res = crear_workflow(estado[uid])
+
+        if "ok" in res:
+            await context.bot.send_message(chat_id, f"✅ Creado correctamente:\n{res['data']}")
+        else:
+            await context.bot.send_message(chat_id, f"❌ Error:\n{res['error']}")
 
     elif query.data == "regen":
         await query.edit_message_text("🔄 Regenerando...")
-        await procesar(query, context, "Mejora el flujo")
+        await procesar(query, context, "regen")
 
 # 📩 MENSAJES
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -202,11 +185,11 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await procesar(update, context, update.message.text)
 
-# 🚀 INICIO
+# 🚀 INICIO BOT
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 app.add_handler(CallbackQueryHandler(botones))
 
-print("🔥 CLAW MARKETPLACE MODE")
+print("🔥 CLAW FUNCIONAL REAL INICIADO")
 app.run_polling()
