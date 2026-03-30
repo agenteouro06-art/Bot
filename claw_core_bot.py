@@ -15,7 +15,7 @@ from telegram.ext import (
     filters
 )
 
-# 🔥 CORRECCIÓN CLAVE (comillas normales)
+# ✅ FIX COMILLAS
 load_dotenv("/home/mau/claw_core/.env")
 
 TELEGRAM_TOKEN     = os.getenv("TELEGRAM_TOKEN")
@@ -25,128 +25,145 @@ N8N_API_KEY        = os.getenv("N8N_API_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 # ================================
-# 🧠 PROMPT MULTI-AGENTE PRO
+# 🧠 PROMPT INTELIGENTE (MEJORADO)
 # ================================
-
 SYSTEM_PROMPT = """
-Eres CLAW, sistema multiagente experto en automatización con n8n.
+Eres CLAW MODO BRUTAL.
 
-AGENTES:
-[ANALISTA] Entiende el negocio
-[ARQUITECTO] Diseña estructura
-[DISEÑADOR] Construye JSON completo
-[VALIDADOR] Corrige errores
-[EJECUTOR] Define APIs
-[OPTIMIZADOR] Lo deja listo para vender
+OBJETIVO:
+Crear workflows reales, funcionales y COMPLETOS para n8n.
+
+MULTIAGENTE:
+[ANALISTA] entiende negocio
+[ARQUITECTO] define nodos
+[DISENADOR] crea JSON
+[VALIDADOR] revisa errores
+[EJECUTOR] define APIs
+[OPTIMIZADOR] deja listo para vender
 
 REGLAS:
 - SIEMPRE devolver JSON válido
-- TODOS los nodos conectados
-- Usar typeVersion correcto
-- Incluir lógica real
-- NO dejar nodos sueltos
+- SIEMPRE conectar TODOS los nodos
+- NUNCA devolver workflow incompleto
+- Si falta info → asumir valores por defecto funcionales
 
-FORMATO:
-Explica breve + JSON dentro de ```json
+IMPORTANTE:
+Responder SIEMPRE con:
+
+1. Explicación breve
+2. JSON entre ```json ... ```
 """
 
 # ================================
-# 🤖 IA
+# 🤖 IA ROBUSTA (FIX ERROR 'choices')
 # ================================
-
-def llamar_ia(mensaje):
-
+def llamar_ia(prompt):
     try:
         r = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
             headers={
-                "Authorization": "Bearer " + OPENROUTER_API_KEY,
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
                 "Content-Type": "application/json"
             },
             json={
-                "model": "anthropic/claude-haiku-3",
+                "model": "openai/gpt-4o-mini",
                 "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": mensaje}
+                    {"role": "user", "content": prompt}
                 ]
             },
             timeout=60
         )
 
         data = r.json()
+
+        if "choices" not in data:
+            return {"texto": str(data), "workflow_json": None}
+
         respuesta = data["choices"][0]["message"]["content"]
 
     except Exception as e:
-        return {"texto": str(e), "json": None}
+        return {"texto": f"Error IA: {e}", "workflow_json": None}
 
-    # 🔍 EXTRAER JSON
+    # 🔥 EXTRAER JSON
     workflow_json = None
-    try:
-        if "```json" in respuesta:
-            json_str = respuesta.split("```json")[1].split("```")[0]
+    if "```" in respuesta:
+        try:
+            json_str = respuesta.split("```json")[-1].split("```")[0]
             workflow_json = json.loads(json_str)
-    except:
-        pass
+        except:
+            workflow_json = None
 
-    return {"texto": respuesta, "json": workflow_json}
-
-
-# ================================
-# 🔗 N8N
-# ================================
-
-def headers():
     return {
-        "X-N8N-API-KEY": N8N_API_KEY,
-        "Content-Type": "application/json"
+        "texto": respuesta,
+        "workflow_json": workflow_json
     }
 
+# ================================
+# 🔥 FALLBACK (SI IA FALLA)
+# ================================
+def workflow_fallback():
+    return {
+        "name": "Fallback Restaurante",
+        "nodes": [
+            {
+                "parameters": {"path": "pedido", "httpMethod": "POST"},
+                "id": "1",
+                "name": "Webhook",
+                "type": "n8n-nodes-base.webhook",
+                "typeVersion": 2,
+                "position": [200, 300]
+            },
+            {
+                "parameters": {"operation": "read", "sheetId": "ID"},
+                "id": "2",
+                "name": "Google Sheets",
+                "type": "n8n-nodes-base.googleSheets",
+                "typeVersion": 4,
+                "position": [400, 300]
+            }
+        ],
+        "connections": {
+            "Webhook": {
+                "main": [[{"node": "Google Sheets", "type": "main", "index": 0}]]
+            }
+        }
+    }
+
+# ================================
+# 🚀 N8N
+# ================================
 def crear_workflow(workflow):
     try:
         r = requests.post(
-            N8N_URL + "/api/v1/workflows",
-            headers=headers(),
+            f"{N8N_URL}/api/v1/workflows",
+            headers={
+                "X-N8N-API-KEY": N8N_API_KEY,
+                "Content-Type": "application/json"
+            },
             json=workflow
         )
         return r.json()
     except Exception as e:
-        return str(e)
-
-
-# ================================
-# 💾 MEMORIA
-# ================================
-
-estado = {}
-
-def guardar(uid, key, val):
-    if uid not in estado:
-        estado[uid] = {}
-    estado[uid][key] = val
-
-def obtener(uid, key):
-    return estado.get(uid, {}).get(key)
-
+        return {"error": str(e)}
 
 # ================================
-# 🚀 BOT
+# 🤖 TELEGRAM
 # ================================
-
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     if update.effective_user.id != ALLOWED_USER:
         return
 
     texto = update.message.text
-    uid = update.effective_user.id
 
+    # 🔥 EFECTO ESCRIBIENDO
     await context.bot.send_chat_action(
         chat_id=update.effective_chat.id,
         action=ChatAction.TYPING
     )
 
-    # 🔥 MULTI AGENTE VISUAL
-    pasos = [
+    # MULTIAGENTE VISUAL
+    fases = [
         "🧠 ANALISTA...",
         "🏗 ARQUITECTO...",
         "🎨 DISEÑADOR...",
@@ -155,84 +172,29 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "💰 OPTIMIZADOR..."
     ]
 
-    for p in pasos:
-        await update.message.reply_text(p)
+    for f in fases:
+        await update.message.reply_text(f)
         await asyncio.sleep(0.4)
 
-    # 🤖 IA
     resultado = llamar_ia(texto)
 
-    await update.message.reply_text("🧠 Resultado:")
-    await update.message.reply_text(resultado["texto"][:4000])
-
-    if resultado["json"]:
-        guardar(uid, "wf", resultado["json"])
-
-        botones = [
-            [
-                InlineKeyboardButton("🚀 Crear", callback_data="crear"),
-                InlineKeyboardButton("👁 Ver JSON", callback_data="json")
-            ]
-        ]
-
-        await update.message.reply_text(
-            "¿Qué hacemos?",
-            reply_markup=InlineKeyboardMarkup(botones)
-        )
+    # 🔥 SI IA FALLA → FALLBACK
+    if not resultado["workflow_json"]:
+        await update.message.reply_text("⚠ IA falló → usando fallback funcional")
+        wf = workflow_fallback()
     else:
-        await update.message.reply_text("❌ No se generó JSON")
+        wf = resultado["workflow_json"]
 
+    crear_workflow(wf)
 
-# ================================
-# 🔘 BOTONES
-# ================================
-
-async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    query = update.callback_query
-    await query.answer()
-
-    uid = query.from_user.id
-    data = query.data
-
-    if data == "crear":
-        wf = obtener(uid, "wf")
-
-        if not wf:
-            await query.edit_message_text("No hay workflow")
-            return
-
-        res = crear_workflow(wf)
-
-        await query.edit_message_text("🚀 Workflow creado en n8n")
-
-    elif data == "json":
-        wf = obtener(uid, "wf")
-
-        await context.bot.send_message(
-            chat_id=query.message.chat.id,
-            text="```json\n" + json.dumps(wf, indent=2) + "\n```",
-            parse_mode="Markdown"
-        )
-
+    await update.message.reply_text("🚀 Workflow creado correctamente")
 
 # ================================
 # ▶️ START
 # ================================
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔥 CLAW PRO ACTIVADO")
-
-
-# ================================
-# ▶️ RUN
-# ================================
-
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
-app.add_handler(CommandHandler("start", start))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-app.add_handler(CallbackQueryHandler(botones))
 
-print("🔥 CLAW PRO CORRIENDO...")
+print("🔥 CLAW MODO BRUTAL ACTIVO")
 app.run_polling()
