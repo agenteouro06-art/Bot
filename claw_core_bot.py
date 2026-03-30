@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, CallbackQueryHandler, filters
 
-# 🔥 ENV
+# 🔥 ENV (NO TOCAR)
 load_dotenv("/home/mau/claw_core/.env")
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -18,77 +18,186 @@ N8N_API_KEY = os.getenv("N8N_API_KEY")
 
 estado = {}
 
-# 🔥 BASE MEJORADA (NO SOLO 2 NODOS)
-def generar_workflow_base():
+# 🔥 WORKFLOW REAL BASE (MODO DIOS)
+def generar_workflow_dios():
     return {
-        "name": "CLAW Smart Flow",
+        "name": "CLAW GOD FLOW - WhatsApp Validator",
         "nodes": [
             {
                 "id": "1",
-                "name": "Webhook",
+                "name": "Webhook WhatsApp",
                 "type": "n8n-nodes-base.webhook",
                 "typeVersion": 2,
                 "position": [200, 300],
                 "parameters": {
-                    "path": "claw-webhook",
+                    "path": "whatsapp-in",
                     "httpMethod": "POST",
                     "responseMode": "lastNode"
                 }
             },
             {
                 "id": "2",
-                "name": "Set Inicial",
+                "name": "Set Datos Entrada",
                 "type": "n8n-nodes-base.set",
                 "typeVersion": 2,
                 "position": [400, 300],
                 "parameters": {
                     "values": {
                         "string": [
-                            {"name": "status", "value": "recibido"}
+                            {"name": "imagen_url", "value": "={{$json.body.image}}"},
+                            {"name": "mensaje_id", "value": "={{$json.body.id}}"}
                         ]
                     }
                 }
             },
             {
                 "id": "3",
-                "name": "Function Procesar",
-                "type": "n8n-nodes-base.function",
-                "typeVersion": 1,
+                "name": "HTTP Descargar Imagen",
+                "type": "n8n-nodes-base.httpRequest",
+                "typeVersion": 2,
                 "position": [600, 300],
                 "parameters": {
-                    "functionCode": "return items.map(item => { item.json.procesado = true; return item; });"
+                    "url": "={{$json.imagen_url}}",
+                    "responseFormat": "file"
                 }
             },
             {
                 "id": "4",
-                "name": "Set Final",
+                "name": "OCR Placeholder",
                 "type": "n8n-nodes-base.set",
                 "typeVersion": 2,
                 "position": [800, 300],
                 "parameters": {
                     "values": {
                         "string": [
-                            {"name": "resultado", "value": "ok"}
+                            {
+                                "name": "texto_extraido",
+                                "value": "REF12345 MONTO 50000"
+                            }
+                        ]
+                    }
+                }
+            },
+            {
+                "id": "5",
+                "name": "Email Banco (Mock)",
+                "type": "n8n-nodes-base.set",
+                "typeVersion": 2,
+                "position": [1000, 300],
+                "parameters": {
+                    "values": {
+                        "string": [
+                            {
+                                "name": "referencia_banco",
+                                "value": "REF12345"
+                            },
+                            {
+                                "name": "monto_banco",
+                                "value": "50000"
+                            }
+                        ]
+                    }
+                }
+            },
+            {
+                "id": "6",
+                "name": "Function Comparar",
+                "type": "n8n-nodes-base.function",
+                "typeVersion": 1,
+                "position": [1200, 300],
+                "parameters": {
+                    "functionCode": """
+const texto = $json.texto_extraido;
+const refBanco = $json.referencia_banco;
+const montoBanco = $json.monto_banco;
+
+const coincideRef = texto.includes(refBanco);
+const coincideMonto = texto.includes(montoBanco);
+
+return [{
+  json: {
+    aprobado: coincideRef && coincideMonto
+  }
+}];
+"""
+                }
+            },
+            {
+                "id": "7",
+                "name": "IF Aprobado",
+                "type": "n8n-nodes-base.if",
+                "typeVersion": 1,
+                "position": [1400, 300],
+                "parameters": {
+                    "conditions": {
+                        "boolean": [
+                            {
+                                "value1": "={{$json.aprobado}}",
+                                "operation": "isTrue"
+                            }
+                        ]
+                    }
+                }
+            },
+            {
+                "id": "8",
+                "name": "Set Respuesta OK",
+                "type": "n8n-nodes-base.set",
+                "typeVersion": 2,
+                "position": [1600, 200],
+                "parameters": {
+                    "values": {
+                        "string": [
+                            {"name": "respuesta", "value": "✅ Pago validado"}
+                        ]
+                    }
+                }
+            },
+            {
+                "id": "9",
+                "name": "Set Respuesta FAIL",
+                "type": "n8n-nodes-base.set",
+                "typeVersion": 2,
+                "position": [1600, 400],
+                "parameters": {
+                    "values": {
+                        "string": [
+                            {"name": "respuesta", "value": "❌ No coincide"}
                         ]
                     }
                 }
             }
         ],
         "connections": {
-            "Webhook": {
-                "main": [[{"node": "Set Inicial", "type": "main", "index": 0}]]
+            "Webhook WhatsApp": {
+                "main": [[{"node": "Set Datos Entrada", "type": "main", "index": 0}]]
             },
-            "Set Inicial": {
-                "main": [[{"node": "Function Procesar", "type": "main", "index": 0}]]
+            "Set Datos Entrada": {
+                "main": [[{"node": "HTTP Descargar Imagen", "type": "main", "index": 0}]]
             },
-            "Function Procesar": {
-                "main": [[{"node": "Set Final", "type": "main", "index": 0}]]
+            "HTTP Descargar Imagen": {
+                "main": [[{"node": "OCR Placeholder", "type": "main", "index": 0}]]
+            },
+            "OCR Placeholder": {
+                "main": [[{"node": "Email Banco (Mock)", "type": "main", "index": 0}]]
+            },
+            "Email Banco (Mock)": {
+                "main": [[{"node": "Function Comparar", "type": "main", "index": 0}]]
+            },
+            "Function Comparar": {
+                "main": [[{"node": "IF Aprobado", "type": "main", "index": 0}]]
+            },
+            "IF Aprobado": {
+                "main": [
+                    [{"node": "Set Respuesta OK", "type": "main", "index": 0}],
+                    [{"node": "Set Respuesta FAIL", "type": "main", "index": 0}]
+                ]
             }
         },
         "settings": {}
     }
 
-# 🔥 NORMALIZAR
+# 🔥 NORMALIZAR (NO TOCAR)
 def normalizar(workflow):
     workflow["name"] = workflow.get("name", "CLAW Flow")
     workflow["nodes"] = workflow.get("nodes", [])
@@ -106,7 +215,7 @@ def normalizar(workflow):
 
     return workflow
 
-# 🔥 CREAR EN N8N
+# 🔥 CREAR WORKFLOW (NO TOCAR)
 def crear_workflow(workflow):
     try:
         workflow = normalizar(workflow)
@@ -143,7 +252,7 @@ async def procesar(update, context, texto):
         await context.bot.send_message(chat_id=update.effective_chat.id, text=p)
         await asyncio.sleep(0.2)
 
-    workflow = generar_workflow_base()
+    workflow = generar_workflow_dios()
     estado[uid] = workflow
 
     kb = [
@@ -158,7 +267,7 @@ async def procesar(update, context, texto):
 
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
-        text="🚀 Workflow listo (mejorado)",
+        text="💀 CLAW GOD FLOW listo",
         reply_markup=InlineKeyboardMarkup(kb)
     )
 
@@ -182,12 +291,12 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id, f"✅ Respuesta:\n{res}")
 
     elif query.data == "regen":
-        await context.bot.send_message(chat_id, "🔄 Regenerando correctamente...")
+        await context.bot.send_message(chat_id, "🔄 Regenerando modo dios...")
 
-        workflow = generar_workflow_base()
+        workflow = generar_workflow_dios()
         estado[uid] = workflow
 
-        await context.bot.send_message(chat_id, "✅ Workflow regenerado")
+        await context.bot.send_message(chat_id, "💀 Nuevo workflow listo")
 
 # 📩 MENSAJES
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -202,5 +311,5 @@ app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 app.add_handler(CallbackQueryHandler(botones))
 
-print("🔥 CLAW PRO ACTIVO")
+print("🔥 CLAW DIOS ACTIVO")
 app.run_polling()
