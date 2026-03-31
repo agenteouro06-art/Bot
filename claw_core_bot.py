@@ -21,178 +21,121 @@ N8N_API_KEY = os.getenv("N8N_API_KEY")
 estado = {}
 
 # =========================
-# 🧠 AGENTE ANALISTA
+# 🧠 ANALISTA
 # =========================
 def analista(texto):
     t = texto.lower()
-
-    if "restaurante" in t:
-        return "restaurante"
     if "pago" in t or "banco" in t:
         return "pago"
+    if "restaurante" in t:
+        return "restaurante"
     return "general"
 
 # =========================
-# 🏗 AGENTE ARQUITECTO
+# 🏗 ARQUITECTO
 # =========================
 def arquitecto(tipo):
+
     if tipo == "pago":
-        return {
-            "name": f"Validacion Pago v{random.randint(1,100)}",
-            "nodes": [
-                {
-                    "name": "Webhook",
-                    "type": "n8n-nodes-base.webhook",
-                    "typeVersion": 2,
-                    "position": [200, 300],
-                    "parameters": {
-                        "path": "pago",
-                        "httpMethod": "POST"
-                    }
-                },
-                {
-                    "name": "Comparar",
-                    "type": "n8n-nodes-base.function",
-                    "typeVersion": 1,
-                    "position": [450, 300],
-                    "parameters": {
-                        "functionCode": """
-const texto = $json.texto || '';
-const banco = $json.banco || '';
-
-return [{
-  json: {
-    aprobado: texto.includes(banco)
-  }
-}]
-"""
-                    }
-                }
-            ],
-            "connections": {
-                "Webhook": {
-                    "main": [[{"node": "Comparar", "type": "main", "index": 0}]]
-                }
-            },
-            "settings": {}
-        }
-
-    # restaurante template
-    return {
-        "name": f"Pedidos Restaurante v{random.randint(1,100)}",
-        "nodes": [
+        nodes = [
             {
                 "name": "Webhook",
                 "type": "n8n-nodes-base.webhook",
                 "typeVersion": 2,
-                "position": [200, 300],
+                "parameters": {"path": "pago", "httpMethod": "POST"},
+                "position": [200, 300]
+            },
+            {
+                "name": "Comparar",
+                "type": "n8n-nodes-base.function",
+                "typeVersion": 1,
                 "parameters": {
-                    "path": "pedido",
-                    "httpMethod": "POST"
-                }
+                    "functionCode": """
+const texto = $json.texto || '';
+const banco = $json.banco || '';
+return [{ json: { aprobado: texto.includes(banco) } }];
+"""
+                },
+                "position": [450, 300]
+            }
+        ]
+
+    else:
+        nodes = [
+            {
+                "name": "Webhook",
+                "type": "n8n-nodes-base.webhook",
+                "typeVersion": 2,
+                "parameters": {"path": "pedido", "httpMethod": "POST"},
+                "position": [200, 300]
             },
             {
                 "name": "Set Pedido",
                 "type": "n8n-nodes-base.set",
                 "typeVersion": 2,
-                "position": [450, 300],
                 "parameters": {
                     "values": {
-                        "string": [
-                            {"name": "pedido", "value": "={{$json.body}}"}
-                        ]
+                        "string": [{"name": "pedido", "value": "={{$json.body}}"}]
                     }
-                }
+                },
+                "position": [450, 300]
             }
-        ],
-        "connections": {
-            "Webhook": {
-                "main": [[{"node": "Set Pedido", "type": "main", "index": 0}]]
-            }
-        },
-        "settings": {}
+        ]
+
+    return {
+        "name": f"CLAW Flow {random.randint(1,1000)}",
+        "nodes": nodes
     }
 
 # =========================
-# 🎨 AGENTE DISEÑADOR
+# 🔥 GENERADOR LIMPIO
 # =========================
-def diseñador(wf):
-    wf["name"] += " PRO"
-    return wf
+def construir_payload(wf):
 
-# =========================
-# ⚙️ AGENTE OPTIMIZADOR
-# =========================
-def optimizador(wf):
-    if random.random() > 0.5:
-        wf["nodes"].append({
-            "name": "Extra",
-            "type": "n8n-nodes-base.set",
-            "typeVersion": 2,
-            "position": [700, 300],
-            "parameters": {
-                "values": {
-                    "string": [{"name": "status", "value": "ok"}]
-                }
-            }
-        })
-    return wf
+    nodes = wf["nodes"]
 
-# =========================
-# 🔍 VALIDADOR + FIX
-# =========================
-def limpiar(wf):
-    nombres = set()
-    nodos = []
-
-    for i, n in enumerate(wf["nodes"]):
-        if n["name"] in nombres:
-            continue
-        nombres.add(n["name"])
-
-        n["position"] = [200 + i*250, 300]
-        n["parameters"] = n.get("parameters", {})
-        n["typeVersion"] = n.get("typeVersion", 1)
-
-        nodos.append(n)
-
-    wf["nodes"] = nodos
-
-    # reconstruir conexiones
-    conexiones = {}
-    for i in range(len(nodos)-1):
-        conexiones[nodos[i]["name"]] = {
-            "main": [[{"node": nodos[i+1]["name"], "type": "main", "index": 0}]]
+    # conexiones reales válidas
+    connections = {}
+    for i in range(len(nodes)-1):
+        connections[nodes[i]["name"]] = {
+            "main": [[{
+                "node": nodes[i+1]["name"],
+                "type": "main",
+                "index": 0
+            }]]
         }
 
-    wf["connections"] = conexiones
+    payload = {
+        "name": wf["name"],
+        "nodes": nodes,
+        "connections": connections,
+        "settings": {}  # 🔥 CLAVE ABSOLUTA
+    }
 
-    wf["settings"] = {}
-
-    return wf
+    return payload
 
 # =========================
-# 🤖 AGENTE REPARADOR
+# 🤖 REPARADOR
 # =========================
-def reparar_por_error(wf, error):
-    error = error.lower()
+def reparar(payload, error):
 
     if "settings" in error:
-        wf["settings"] = {}
+        payload["settings"] = {}
 
-    if "nodes" in error:
-        wf["nodes"] = wf["nodes"][:2]
+    if "connections" in error:
+        payload["connections"] = {}
 
-    return wf
+    return payload
 
 # =========================
-# 🚀 CREAR CON IA + RETRY
+# 🚀 CREAR EN N8N (FIX REAL)
 # =========================
-def crear_saas(wf):
+def crear_n8n(payload):
+
     for intento in range(3):
         print(f"🚀 Intento {intento+1}")
 
-        wf = limpiar(wf)
+        clean_payload = construir_payload(payload)
 
         r = requests.post(
             f"{N8N_URL}/api/v1/workflows",
@@ -200,7 +143,7 @@ def crear_saas(wf):
                 "X-N8N-API-KEY": N8N_API_KEY,
                 "Content-Type": "application/json"
             },
-            json=wf
+            json=clean_payload
         )
 
         print("STATUS:", r.status_code)
@@ -209,24 +152,52 @@ def crear_saas(wf):
         if r.status_code in [200, 201]:
             return r.json()
 
-        wf = reparar_por_error(wf, r.text)
+        payload = reparar(payload, r.text)
 
     return {"error": "❌ Falló después de 3 intentos"}
+
+# =========================
+# 🏢 MODO AGENCIA
+# =========================
+def generar_oferta(tipo):
+
+    if tipo == "pago":
+        return """
+💰 SERVICIO: Validación automática de pagos
+
+✔ Detecta transferencias
+✔ Evita fraudes
+✔ Automatiza confirmación
+
+Precio sugerido: $300 - $800 USD
+"""
+
+    if tipo == "restaurante":
+        return """
+🍔 SERVICIO: Bot de pedidos automático
+
+✔ Recibe pedidos 24/7
+✔ Reduce errores humanos
+✔ Mejora atención
+
+Precio sugerido: $200 - $600 USD
+"""
+
+    return "💡 Flujo automatizado listo para vender"
 
 # =========================
 # 🤖 MOTOR
 # =========================
 async def procesar(update, context, texto):
+
     uid = update.effective_user.id
 
     pasos = [
-        "🧠 Analista IA",
-        "🏗 Arquitecto IA",
-        "🎨 Diseñador IA",
-        "⚙ Optimizador IA",
-        "🔍 Validando",
-        "🛠 Reparando",
-        "🚀 Listo"
+        "🧠 Analizando negocio...",
+        "🏗 Diseñando sistema...",
+        "⚙ Generando flujo...",
+        "🔍 Validando...",
+        "💰 Preparando oferta..."
     ]
 
     for p in pasos:
@@ -235,10 +206,10 @@ async def procesar(update, context, texto):
 
     tipo = analista(texto)
     wf = arquitecto(tipo)
-    wf = diseñador(wf)
-    wf = optimizador(wf)
 
     estado[uid] = wf
+
+    oferta = generar_oferta(tipo)
 
     kb = [
         [
@@ -247,12 +218,16 @@ async def procesar(update, context, texto):
         ]
     ]
 
-    await update.message.reply_text("💰 Flujo SaaS listo para vender", reply_markup=InlineKeyboardMarkup(kb))
+    await update.message.reply_text(
+        f"✅ Sistema listo\n\n{oferta}",
+        reply_markup=InlineKeyboardMarkup(kb)
+    )
 
 # =========================
 # 🎛 BOTONES
 # =========================
 async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     query = update.callback_query
     await query.answer()
 
@@ -264,8 +239,8 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat, f"```json\n{txt[:4000]}\n```", parse_mode="Markdown")
 
     elif query.data == "crear":
-        await context.bot.send_message(chat, "🚀 Creando flujo SaaS...")
-        res = crear_saas(estado[uid])
+        await context.bot.send_message(chat, "🚀 Creando flujo en n8n...")
+        res = crear_n8n(estado[uid])
         await context.bot.send_message(chat, str(res))
 
 # =========================
@@ -285,5 +260,5 @@ app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 app.add_handler(CallbackQueryHandler(botones))
 
-print("💀 CLAW SaaS MODE ACTIVADO")
+print("💀 CLAW AGENCIA AUTOMATIZADA ACTIVA")
 app.run_polling()
