@@ -1,14 +1,14 @@
 import os
 import json
 import asyncio
+import random
 import requests
-import uuid
 from dotenv import load_dotenv
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, CallbackQueryHandler, filters
 
-# 🔐 ENV
+# 🔥 ENV
 load_dotenv("/home/mau/claw_core/.env")
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -18,24 +18,11 @@ N8N_API_KEY = os.getenv("N8N_API_KEY")
 
 estado = {}
 
-# 🧠 ===============================
-# 🔥 MOTOR IA SIMULADO (DINÁMICO REAL)
-# ===============================
+# =========================
+# 🧠 TEMPLATES BASE (REALES)
+# =========================
 
-def detectar_tipo(texto):
-    t = texto.lower()
-
-    if "pedido" in t or "restaurante" in t:
-        return "pedidos"
-
-    if "captura" in t or "transferencia" in t:
-        return "pagos"
-
-    return "basico"
-
-
-# 🧬 TEMPLATES BASE (TIPO MARKETPLACE REAL)
-def template_pedidos():
+def template_restaurante():
     return {
         "name": "Pedidos Restaurante",
         "nodes": [
@@ -63,37 +50,29 @@ def template_pedidos():
             },
             {
                 "id": "3",
-                "name": "Responder",
+                "name": "Set Pedido",
                 "type": "n8n-nodes-base.set",
                 "typeVersion": 2,
                 "position": [600, 300],
                 "parameters": {
                     "values": {
                         "string": [
-                            {
-                                "name": "mensaje",
-                                "value": "Menú enviado"
-                            }
+                            {"name": "pedido", "value": "={{$json.body}}"}
                         ]
                     }
                 }
             }
         ],
         "connections": {
-            "Webhook": {
-                "main": [[{"node": "Google Sheets", "type": "main", "index": 0}]]
-            },
-            "Google Sheets": {
-                "main": [[{"node": "Responder", "type": "main", "index": 0}]]
-            }
+            "Webhook": {"main": [[{"node": "Google Sheets","type": "main","index": 0}]]},
+            "Google Sheets": {"main": [[{"node": "Set Pedido","type": "main","index": 0}]]}
         },
         "settings": {}
     }
 
-
-def template_pagos():
+def template_validacion_pago():
     return {
-        "name": "Validador Pagos",
+        "name": "Validacion Pago",
         "nodes": [
             {
                 "id": "1",
@@ -109,85 +88,74 @@ def template_pagos():
             },
             {
                 "id": "2",
-                "name": "Procesar",
+                "name": "Function Comparar",
                 "type": "n8n-nodes-base.function",
                 "typeVersion": 1,
-                "position": [400, 300],
+                "position": [500, 300],
                 "parameters": {
                     "functionCode": """
-return items.map(item => {
-  const texto = JSON.stringify(item.json);
-  const aprobado = texto.includes("REF");
-  return { json: { aprobado } };
-});
+const texto = $json.texto || '';
+const banco = $json.banco || '';
+
+return [{
+  json: {
+    aprobado: texto.includes(banco)
+  }
+}]
 """
-                }
-            },
-            {
-                "id": "3",
-                "name": "IF",
-                "type": "n8n-nodes-base.if",
-                "typeVersion": 1,
-                "position": [600, 300],
-                "parameters": {
-                    "conditions": {
-                        "boolean": [
-                            {
-                                "value1": "={{$json.aprobado}}",
-                                "operation": "isTrue"
-                            }
-                        ]
-                    }
                 }
             }
         ],
         "connections": {
-            "Webhook": {
-                "main": [[{"node": "Procesar", "type": "main", "index": 0}]]
-            },
-            "Procesar": {
-                "main": [[{"node": "IF", "type": "main", "index": 0}]]
-            }
+            "Webhook": {"main": [[{"node": "Function Comparar","type": "main","index": 0}]]}
         },
         "settings": {}
     }
 
+# =========================
+# 🧠 MULTI-AGENTE REAL
+# =========================
 
-def template_basico():
-    return {
-        "name": "Base Flow",
-        "nodes": [
-            {
-                "id": "1",
-                "name": "Webhook",
-                "type": "n8n-nodes-base.webhook",
-                "typeVersion": 2,
-                "position": [200, 300],
-                "parameters": {
-                    "path": "base",
-                    "httpMethod": "POST"
+def agente_analista(texto):
+    if "restaurante" in texto.lower():
+        return "restaurante"
+    elif "pago" in texto.lower() or "banco" in texto.lower():
+        return "pago"
+    return "general"
+
+def agente_arquitecto(tipo):
+    if tipo == "restaurante":
+        return template_restaurante()
+    elif tipo == "pago":
+        return template_validacion_pago()
+    return template_restaurante()
+
+def agente_diseñador(workflow):
+    # mejora visual / nombres
+    workflow["name"] += f" v{random.randint(1,100)}"
+    return workflow
+
+def agente_optimizador(workflow):
+    # agrega nodo extra random (variación real)
+    if random.random() > 0.5:
+        workflow["nodes"].append({
+            "id": str(len(workflow["nodes"]) + 1),
+            "name": "Set Extra",
+            "type": "n8n-nodes-base.set",
+            "typeVersion": 2,
+            "position": [800, 300],
+            "parameters": {
+                "values": {
+                    "string": [{"name": "extra", "value": "optimizado"}]
                 }
             }
-        ],
-        "connections": {},
-        "settings": {}
-    }
+        })
+    return workflow
 
+# =========================
+# 🔥 NORMALIZADOR (CRÍTICO)
+# =========================
 
-# 🧠 GENERADOR INTELIGENTE
-def generar_workflow(texto):
-    tipo = detectar_tipo(texto)
-
-    if tipo == "pedidos":
-        return template_pedidos()
-
-    if tipo == "pagos":
-        return template_pagos()
-
-    return template_basico()
-
-
-# 🔧 NORMALIZADOR (CRÍTICO)
 def normalizar(workflow):
     workflow["name"] = workflow.get("name", "CLAW Flow")
     workflow["nodes"] = workflow.get("nodes", [])
@@ -197,17 +165,18 @@ def normalizar(workflow):
     workflow.pop("id", None)
     workflow.pop("active", None)
 
-    for n in workflow["nodes"]:
-        n["id"] = str(uuid.uuid4())
-        n["parameters"] = n.get("parameters", {})
-        n["position"] = n.get("position", [300, 300])
-        n["typeVersion"] = n.get("typeVersion", 1)
+    for node in workflow["nodes"]:
+        node["parameters"] = node.get("parameters", {})
+        node["position"] = node.get("position", [300, 300])
+        node["typeVersion"] = node.get("typeVersion", 1)
 
     return workflow
 
-
+# =========================
 # 🚀 CREAR EN N8N
-def crear(workflow):
+# =========================
+
+def crear_workflow(workflow):
     workflow = normalizar(workflow)
 
     r = requests.post(
@@ -224,13 +193,17 @@ def crear(workflow):
     except:
         return {"error": r.text}
 
+# =========================
+# 🤖 MOTOR PRINCIPAL
+# =========================
 
-# 🧠 MULTI-AGENTE REAL
-async def agentes(update):
+async def procesar(update, context, texto):
+    uid = update.effective_user.id
+
     pasos = [
-        "🧠 ANALISTA IA real...",
-        "🏗 ARQUITECTO IA real...",
-        "🎨 DISEÑADOR IA real...",
+        "🧠 ANALISTA IA...",
+        "🏗 ARQUITECTO IA...",
+        "🎨 DISEÑADOR IA...",
         "🔍 VALIDANDO JSON...",
         "⚙ CORRIGIENDO...",
         "💰 OPTIMIZANDO..."
@@ -238,16 +211,12 @@ async def agentes(update):
 
     for p in pasos:
         await update.message.reply_text(p)
-        await asyncio.sleep(0.4)
+        await asyncio.sleep(0.2)
 
-
-# 🚀 PROCESAR
-async def procesar(update, context, texto):
-    uid = update.effective_user.id
-
-    await agentes(update)
-
-    workflow = generar_workflow(texto)
+    tipo = agente_analista(texto)
+    workflow = agente_arquitecto(tipo)
+    workflow = agente_diseñador(workflow)
+    workflow = agente_optimizador(workflow)
 
     estado[uid] = workflow
 
@@ -263,47 +232,55 @@ async def procesar(update, context, texto):
     ]
 
     await update.message.reply_text(
-        "💀 ULTRA FLOW generado dinámicamente",
+        "💀 ULTRA FLOW generado (dinámico real)",
         reply_markup=InlineKeyboardMarkup(kb)
     )
 
-
+# =========================
 # 🎛 BOTONES
+# =========================
+
 async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
     uid = query.from_user.id
+    chat_id = query.message.chat.id
 
-    if query.data == "crear":
-        res = crear(estado[uid])
-        await query.message.reply_text(f"✅ {res}")
-
-    elif query.data == "ver":
+    if query.data == "ver":
         txt = json.dumps(estado[uid], indent=2)
-        await query.message.reply_text(f"```json\n{txt[:4000]}\n```", parse_mode="Markdown")
+        await context.bot.send_message(chat_id, f"```json\n{txt[:4000]}\n```", parse_mode="Markdown")
+
+    elif query.data == "crear":
+        await context.bot.send_message(chat_id, "🚀 Enviando a n8n...")
+        res = crear_workflow(estado[uid])
+        await context.bot.send_message(chat_id, f"✅ Respuesta:\n{res}")
 
     elif query.data == "regen":
-        await query.message.reply_text("🔄 Regenerando inteligente...")
-        nuevo = generar_workflow(str(uuid.uuid4()))
-        estado[uid] = nuevo
-        await query.message.reply_text("✅ Nuevo flujo generado")
+        await context.bot.send_message(chat_id, "🔄 Regenerando real...")
+        await procesar(query, context, str(random.random()))
 
     elif query.data == "mejorar":
-        await query.message.reply_text("🧠 Mejorando lógica...")
-        estado[uid]["name"] += " v2"
-        await query.message.reply_text("✅ Mejorado")
+        await context.bot.send_message(chat_id, "🧠 Mejorando IA...")
+        wf = estado[uid]
+        wf = agente_optimizador(wf)
+        estado[uid] = wf
+        await context.bot.send_message(chat_id, "✅ Mejorado")
 
-
+# =========================
 # 📩 MENSAJES
+# =========================
+
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ALLOWED_USER:
         return
 
     await procesar(update, context, update.message.text)
 
+# =========================
+# 🚀 START
+# =========================
 
-# 🚀 BOT
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
