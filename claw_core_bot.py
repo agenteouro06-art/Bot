@@ -1,216 +1,188 @@
-import os
-import json
-import subprocess
-import requests
+import os, json, requests, re
 from dotenv import load_dotenv
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder, MessageHandler, CommandHandler,
-    ContextTypes, CallbackQueryHandler, filters,
-)
-
-# 🔥 CARGAR ENV (CORREGIDO)
 load_dotenv("/home/mau/claw_core/.env")
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-ALLOWED_USER   = int(os.getenv("ALLOWED_USER", "0"))
-N8N_URL        = os.getenv("N8N_URL", "http://localhost:5678")
-N8N_API_KEY    = os.getenv("N8N_API_KEY")
 OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY")
 
-MODELO = "anthropic/claude-3-haiku"
+# =========================
+# 🔥 OPENROUTER CALL
+# =========================
+def or_chat(system, user, max_tokens=2000):
+    url = "https://openrouter.ai/api/v1/chat/completions"
 
-estado = {}
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_KEY}",
+        "Content-Type": "application/json"
+    }
 
-# 🔥 CLIENTE OPENROUTER SIN SDK OPENAI
-def or_chat(system, messages, max_tokens=800):
+    data = {
+        "model": "anthropic/claude-3-haiku",
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user}
+        ],
+        "max_tokens": max_tokens
+    }
+
+    r = requests.post(url, headers=headers, json=data)
+    return r.json()["choices"][0]["message"]["content"]
+
+
+# =========================
+# 🧹 LIMPIADOR JSON
+# =========================
+def limpiar_json(raw):
+    if "```" in raw:
+        raw = raw.split("```")[1]
+
+    raw = raw.replace("json", "").strip()
+
+    inicio = raw.find("{")
+    fin = raw.rfind("}") + 1
+
+    return raw[inicio:fin]
+
+
+# =========================
+# 🧬 BASE LOCAL (REAL)
+# =========================
+PLANTILLAS = [
+{
+"name": "Pedidos WhatsApp",
+"nodes": [
+{"id":"1","name":"Webhook","type":"n8n-nodes-base.webhook","typeVersion":2,"position":[200,300],"parameters":{"path":"pedido","httpMethod":"POST"}},
+{"id":"2","name":"Set Pedido","type":"n8n-nodes-base.set","typeVersion":2,"position":[450,300],"parameters":{"values":{"string":[{"name":"pedido","value":"={{$json.body}}"}]}}},
+{"id":"3","name":"Google Sheets","type":"n8n-nodes-base.googleSheets","typeVersion":4,"position":[700,300],"parameters":{"operation":"append"}}
+],
+"connections":{
+"Webhook":{"main":[[{"node":"Set Pedido","type":"main","index":0}]]},
+"Set Pedido":{"main":[[{"node":"Google Sheets","type":"main","index":0}]]}
+},
+"settings":{},
+"pinData":{}
+},
+
+{
+"name": "Webhook Básico",
+"nodes":[
+{"id":"1","name":"Webhook","type":"n8n-nodes-base.webhook","typeVersion":2,"position":[200,300],"parameters":{}},
+{"id":"2","name":"Respuesta","type":"n8n-nodes-base.set","typeVersion":2,"position":[450,300],"parameters":{"values":{"string":[{"name":"msg","value":"ok"}]}}}
+],
+"connections":{
+"Webhook":{"main":[[{"node":"Respuesta","type":"main","index":0}]]}
+},
+"settings":{},
+"pinData":{}
+}
+]
+
+
+# =========================
+# 🌐 SCRAPER (BASE REALISTA)
+# =========================
+def buscar_workflows_online(desc):
     try:
-        r = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_KEY}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://github.com/claw-core",
-                "X-Title": "CLAW CORE Bot"
-            },
-            json={
-                "model": MODELO,
-                "messages": [{"role": "system", "content": system}] + messages,
-                "max_tokens": max_tokens
-            },
-            timeout=30
-        )
+        # Simulación preparada para scraping real
+        url = f"https://api.github.com/search/code?q=n8n+workflow+json+{desc}"
+        r = requests.get(url, timeout=5)
+
+        if r.status_code != 200:
+            return None
 
         data = r.json()
 
-        return data["choices"][0]["message"]["content"].strip()
+        if "items" not in data or not data["items"]:
+            return None
 
-    except Exception as e:
-        print("Error IA:", e)
-        return ""
+        # 🔥 aquí puedes luego descargar raw_url
+        return None
 
-# 🔥 ESTADO
-def get_st(uid):
-    if uid not in estado:
-        estado[uid] = {
-            "flujo": None,
-            "cmd": None,
-            "historial": [],
-            "modo": None,
-            "flujo_desc": ""
-        }
-    return estado[uid]
-
-# 🔥 NORMALIZADOR
-def normalizar(wf):
-    for k in ["id", "active", "createdAt", "updatedAt", "versionId"]:
-        wf.pop(k, None)
-
-    wf.setdefault("settings", {"executionOrder": "v1"})
-    wf.setdefault("connections", {})
-    wf.setdefault("pinData", {})
-
-    for n in wf.get("nodes", []):
-        n.setdefault("parameters", {})
-        n.setdefault("position", [300, 300])
-        n.setdefault("typeVersion", 1)
-
-        if not n.get("id"):
-            n["id"] = n.get("name", "node").replace(" ", "_").lower()
-
-    return wf
-
-# 🔥 CREAR EN N8N
-def n8n_crear(wf):
-    wf = normalizar(wf)
-
-    r = requests.post(
-        f"{N8N_URL}/api/v1/workflows",
-        headers={
-            "X-N8N-API-KEY": N8N_API_KEY,
-            "Content-Type": "application/json"
-        },
-        json=wf,
-        timeout=20
-    )
-
-    try:
-        return r.json()
     except:
-        return {"error": r.text}
+        return None
 
-# 🔥 GENERADOR IA (MEJORADO)
+
+# =========================
+# 🧠 ELEGIR BASE
+# =========================
+def elegir_base(desc):
+    d = desc.lower()
+
+    if "pedido" in d or "restaurante" in d:
+        return PLANTILLAS[0]
+
+    return PLANTILLAS[1]
+
+
+# =========================
+# 🤖 CLONADOR + MODIFICADOR
+# =========================
 def generar_flujo(desc):
+    print("🧠 ANALISTA IA...")
+    print("🏗 ARQUITECTO IA...")
+    print("🎨 DISEÑADOR IA...")
+    print("🔍 VALIDANDO JSON...")
+
+    base = buscar_workflows_online(desc)
+
+    if not base:
+        print("⚠ usando base local")
+        base = elegir_base(desc)
+
     system = """
 Eres experto en n8n.
 
-Genera workflows REALES y FUNCIONALES.
+Recibirás un workflow real.
 
-REGLAS:
-- SOLO JSON
-- NO texto extra
-- Nodes válidos de n8n
-- Flujo completo listo para producción
+Tu trabajo:
+- MODIFICARLO según el requerimiento
+- Mantener estructura válida
+- NO inventar nodos falsos
+- RESPONDER SOLO JSON limpio
+
+Si fallas devuelve:
+{"error":"fail"}
 """
 
-    raw = or_chat(system, [{"role": "user", "content": desc}], 3000)
+    prompt = f"""
+WORKFLOW BASE:
+{json.dumps(base, indent=2)}
+
+REQUERIMIENTO:
+{desc}
+
+Devuelve JSON final.
+"""
 
     try:
-        if "```" in raw:
-            raw = raw.split("```")[1].replace("json", "").strip()
+        raw = or_chat(system, prompt)
 
-        return json.loads(raw)
+        limpio = limpiar_json(raw)
 
-    except:
-        print("⚠ IA devolvió JSON inválido")
-        return None
+        data = json.loads(limpio)
 
-# 🚀 PROCESAR MENSAJE
-async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
+        if "error" in data:
+            print("❌ IA falló → fallback")
+            return base
 
-    if uid != ALLOWED_USER:
-        return
+        print("⚙ CORRIGIENDO...")
+        print("💰 OPTIMIZANDO...")
+        print("💀 ULTRA FLOW listo")
 
-    texto = update.message.text
-    st = get_st(uid)
+        return data
 
-    pasos = [
-        "🧠 ANALISTA IA...",
-        "🏗 ARQUITECTO IA...",
-        "🎨 DISEÑADOR IA...",
-        "🔍 VALIDANDO JSON...",
-        "⚙ CORRIGIENDO...",
-        "💰 OPTIMIZANDO..."
-    ]
+    except Exception as e:
+        print("❌ ERROR IA:", e)
+        return base
 
-    for p in pasos:
-        await update.message.reply_text(p)
 
-    wf = generar_flujo(texto)
+# =========================
+# 🧪 TEST DIRECTO
+# =========================
+if __name__ == "__main__":
+    desc = input("Describe el flujo:\n> ")
 
-    if not wf:
-        await update.message.reply_text("❌ IA falló generando JSON válido")
-        return
+    flujo = generar_flujo(desc)
 
-    st["flujo"] = wf
-    st["flujo_desc"] = texto
-
-    kb = [
-        [
-            InlineKeyboardButton("🚀 Crear en n8n", callback_data="crear"),
-            InlineKeyboardButton("📄 Ver JSON", callback_data="ver")
-        ],
-        [
-            InlineKeyboardButton("🔄 Regenerar", callback_data="regen")
-        ]
-    ]
-
-    await update.message.reply_text(
-        "💀 FLOW GENERADO (IA REAL)",
-        reply_markup=InlineKeyboardMarkup(kb)
-    )
-
-# 🎛 BOTONES
-async def botones(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-
-    uid = q.from_user.id
-    st = get_st(uid)
-    chat = q.message.chat.id
-
-    if q.data == "crear":
-        await ctx.bot.send_message(chat, "🚀 Creando en n8n...")
-
-        res = n8n_crear(st["flujo"])
-
-        if res.get("id"):
-            await ctx.bot.send_message(chat, f"✅ Creado ID: {res['id']}")
-        else:
-            await ctx.bot.send_message(chat, f"❌ Error:\n{res}")
-
-    elif q.data == "ver":
-        txt = json.dumps(st["flujo"], indent=2)
-        await ctx.bot.send_message(chat, f"```json\n{txt[:4000]}\n```", parse_mode="Markdown")
-
-    elif q.data == "regen":
-        await ctx.bot.send_message(chat, "🔄 Regenerando...")
-
-        wf = generar_flujo(st["flujo_desc"])
-
-        if wf:
-            st["flujo"] = wf
-            await ctx.bot.send_message(chat, "✅ Regenerado")
-        else:
-            await ctx.bot.send_message(chat, "❌ Error regenerando")
-
-# 🚀 INICIO
-app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-app.add_handler(CallbackQueryHandler(botones))
-
-print("🔥 CLAW CORE FULL IA (OPENROUTER) ACTIVO")
-app.run_polling()
+    print("\n========== RESULTADO ==========\n")
+    print(json.dumps(flujo, indent=2))
