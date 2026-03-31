@@ -1,753 +1,471 @@
-“””
-╔══════════════════════════════════════════════════════════╗
-║           CLAW CORE BOT — Asistente n8n con IA          ║
-║  Telegram + Claude Haiku + n8n API + Ejecución Ubuntu   ║
-╚══════════════════════════════════════════════════════════╝
-“””
-
-import os
-import json
-import asyncio
-import subprocess
-import requests
-import anthropic
+import os, json, subprocess, requests
 from dotenv import load_dotenv
+from openai import OpenAI
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
 ApplicationBuilder, MessageHandler, CommandHandler,
-ContextTypes, CallbackQueryHandler, filters
+ContextTypes, CallbackQueryHandler, filters,
 )
-
-# ─────────────────────────────────────────────
-
-# ENV
-
-# ─────────────────────────────────────────────
 
 load_dotenv(”/home/mau/claw_core/.env”)
 
-TELEGRAM_TOKEN  = os.getenv(“TELEGRAM_TOKEN”)
-ALLOWED_USER    = int(os.getenv(“ALLOWED_USER”))
-N8N_URL         = os.getenv(“N8N_URL”)          # ej: http://localhost:5678
-N8N_API_KEY     = os.getenv(“N8N_API_KEY”)
-ANTHROPIC_KEY   = os.getenv(“ANTHROPIC_API_KEY”)
+TELEGRAM_TOKEN = os.getenv(“TELEGRAM_TOKEN”)
+ALLOWED_USER   = int(os.getenv(“ALLOWED_USER”, “0”))
+N8N_URL        = os.getenv(“N8N_URL”, “http://localhost:5678”)
+N8N_API_KEY    = os.getenv(“N8N_API_KEY”)
+OPENROUTER_KEY = os.getenv(“OPENROUTER_API_KEY”)
 
-claude = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
+MODELO = “anthropic/claude-3-haiku”
 
-# ─────────────────────────────────────────────
+client = OpenAI(
+api_key=OPENROUTER_KEY,
+base_url=“https://openrouter.ai/api/v1”,
+)
 
-# ESTADO POR USUARIO
+estado = {}
 
-# ─────────────────────────────────────────────
-
-estado = {}   # uid → { “flujo”: {…}, “cmd”: “…”, “historial”: […] }
-
-def get_estado(uid):
+def get_st(uid):
 if uid not in estado:
-estado[uid] = {“flujo”: None, “cmd”: None, “historial”: []}
+estado[uid] = {
+“flujo”: None, “cmd”: None, “historial”: [],
+“repair_id”: None, “flujo_desc”: “”, “repair_desc”: “”, “modo”: None,
+}
 return estado[uid]
 
-# ══════════════════════════════════════════════
-
-# BLOQUE 1 — CLASIFICADOR DE INTENCIÓN (IA)
-
-# ══════════════════════════════════════════════
-
-SYSTEM_CLASIFICADOR = “””
-Eres el clasificador de intenciones de CLAW CORE, un asistente para desarrolladores n8n.
-Analiza el mensaje del usuario y responde SOLO con un JSON válido, sin markdown, sin explicaciones.
-
-Formato de respuesta:
-{
-“tipo”: “<TIPO>”,
-“resumen”: “<resumen breve de lo que pide>”,
-“datos”: {}
-}
-
-Tipos posibles:
-
-- “FLUJO_CREAR”   → pide crear un flujo/workflow nuevo en n8n
-- “FLUJO_REPARAR” → pide arreglar, depurar o modificar un flujo existente
-- “FLUJO_LISTAR”  → pide ver los flujos que tiene en n8n
-- “FLUJO_VER”     → pide ver el JSON o detalle de un flujo específico
-- “FLUJO_ACTIVAR” → pide activar o desactivar un flujo
-- “CMD_SISTEMA”   → quiere ejecutar un comando en el servidor Ubuntu (memoria, disco, instalar, etc.)
-- “PREGUNTA”      → pregunta general sobre n8n, automatizaciones, su negocio
-- “OTRO”          → todo lo demás
-
-Para CMD_SISTEMA incluye en “datos”: { “cmd_sugerido”: “<comando bash exacto>” }
-Para FLUJO_CREAR incluye en “datos”: { “nombre”: “<nombre sugerido>”, “descripcion”: “<qué hace el flujo>” }
-Para FLUJO_REPARAR incluye en “datos”: { “workflow_id”: null }
-“””
-
-async def clasificar_intencion(texto: str) -> dict:
-“”“Usa Claude Haiku para clasificar qué quiere el usuario.”””
-try:
-r = claude.messages.create(
-model=“claude-haiku-4-5”,
-max_tokens=400,
-system=SYSTEM_CLASIFICADOR,
-messages=[{“role”: “user”, “content”: texto}]
+def or_chat(system, messages, max_tokens=600):
+msgs = [{“role”: “system”, “content”: system}] + messages
+r = client.chat.completions.create(
+model=MODELO,
+max_tokens=max_tokens,
+messages=msgs,
+extra_headers={
+“HTTP-Referer”: “https://github.com/claw-core”,
+“X-Title”: “CLAW CORE Bot”,
+},
 )
-raw = r.content[0].text.strip()
+return r.choices[0].message.content.strip()
+
+SYS_CLAS = “”“Clasifica el mensaje. Responde SOLO JSON valido, sin markdown ni texto extra.
+{“tipo”:”<TIPO>”,“resumen”:”<que pide>”,“datos”:{}}
+Tipos:
+FLUJO_CREAR   - quiere crear un workflow nuevo en n8n
+FLUJO_REPARAR - quiere arreglar un flujo existente
+FLUJO_LISTAR  - quiere ver sus flujos en n8n
+CMD_SISTEMA   - quiere ejecutar algo en el servidor Ubuntu
+PREGUNTA      - pregunta sobre n8n, precios, negocio
+OTRO          - cualquier otra cosa
+Para CMD_SISTEMA: {“datos”:{“cmd_sugerido”:”<comando bash exacto>”}}
+Para FLUJO_CREAR: {“datos”:{“nombre”:”<nombre>”,“descripcion”:”<descripcion>”}}”””
+
+def clasificar(texto):
+try:
+raw = or_chat(SYS_CLAS, [{“role”: “user”, “content”: texto}], max_tokens=300)
+if “`" in raw: raw = raw.split("`”)[1].lstrip(“json”).strip()
 return json.loads(raw)
 except Exception as e:
-return {“tipo”: “OTRO”, “resumen”: texto, “datos”: {}, “error”: str(e)}
+print(f”[clasificar error] {e}”)
+return {“tipo”: “OTRO”, “resumen”: texto, “datos”: {}}
 
-# ══════════════════════════════════════════════
+SYS_N8N = “”“Eres experto en n8n. Genera workflows JSON validos e importables directamente.
+REGLAS:
 
-# BLOQUE 2 — GENERADOR DE FLUJOS n8n (IA)
+- Devuelve SOLO el JSON, sin markdown, sin texto extra
+- Campos root obligatorios: name, nodes, connections, settings, pinData
+- Cada nodo debe tener: id (string unico), name, type, typeVersion, position ([x,y]), parameters
+- Posiciones: X empieza en 200 e incrementa 250 por nodo. Y base 300
+- Nodos reales: n8n-nodes-base.webhook, n8n-nodes-base.httpRequest,
+  n8n-nodes-base.googleSheets, n8n-nodes-base.set, n8n-nodes-base.if,
+  n8n-nodes-base.sendEmail, n8n-nodes-base.respondToWebhook
+- Conexiones: {“NodoA”:{“main”:[[{“node”:“NodoB”,“type”:“main”,“index”:0}]]}}
+- settings: {“executionOrder”:“v1”}
+- Flujos COMPLETOS y FUNCIONALES, listos para vender a negocios.”””
 
-# ══════════════════════════════════════════════
-
-SYSTEM_N8N_EXPERTO = “””
-Eres un experto en n8n que genera workflows JSON válidos y funcionales.
-El usuario necesita flujos para vender a negocios (restaurantes, tiendas, etc.).
-
-REGLAS CRÍTICAS:
-
-1. Devuelve SOLO el JSON del workflow, sin markdown, sin texto extra.
-1. El JSON debe ser importable directamente en n8n.
-1. Usa SIEMPRE estos campos en el root: name, nodes, connections, settings, pinData.
-1. Cada nodo DEBE tener: id (string único), name, type, typeVersion, position ([x,y]), parameters.
-1. Las conexiones van en “connections” con la estructura exacta de n8n.
-1. Usa nodos reales de n8n: n8n-nodes-base.webhook, n8n-nodes-base.httpRequest,
-   n8n-nodes-base.googleSheets, n8n-nodes-base.sendEmail, n8n-nodes-base.set,
-   n8n-nodes-base.if, n8n-nodes-base.whatsappBusiness, @n8n/n8n-nodes-langchain.openAi, etc.
-1. Para flujos de restaurante/pedidos usa Webhook de entrada + validación + respuesta.
-1. Los flujos deben ser COMPLETOS y FUNCIONALES, no esqueletos.
-1. Espaciado de posiciones: incrementa X en 250 por cada nodo, Y base en 300.
-
-Estructura de conexión ejemplo:
-“connections”: {
-“NombreNodo1”: {
-“main”: [[{“node”: “NombreNodo2”, “type”: “main”, “index”: 0}]]
-}
-}
-“””
-
-async def generar_flujo_ia(descripcion: str, flujo_base: dict = None) -> dict:
-“”“Genera o repara un flujo n8n usando Claude.”””
-
-```
+def generar_flujo(descripcion, flujo_base=None):
 if flujo_base:
-    prompt = f"""Repara y mejora este flujo n8n que tiene problemas.
-```
-
-Flujo actual (con errores):
-{json.dumps(flujo_base, indent=2)}
-
-Problemas reportados / cambios necesarios:
-{descripcion}
-
-Devuelve el flujo COMPLETO corregido en JSON válido.”””
+prompt = (
+f”Repara este flujo n8n:\n{json.dumps(flujo_base, indent=2)}\n\n”
+f”Problema:\n{descripcion}\n\nDevuelve el JSON completo corregido.”
+)
 else:
-prompt = f””“Crea un workflow n8n completo y funcional para:
-{descripcion}
-
-El flujo debe ser profesional, listo para vender a negocios.
-Devuelve SOLO el JSON del workflow.”””
-
-```
-r = claude.messages.create(
-    model="claude-haiku-4-5",
-    max_tokens=4000,
-    system=SYSTEM_N8N_EXPERTO,
-    messages=[{"role": "user", "content": prompt}]
-)
-
-raw = r.content[0].text.strip()
-
-# Limpiar posibles bloques markdown
-if raw.startswith("```"):
-    raw = raw.split("```")[1]
-    if raw.startswith("json"):
-        raw = raw[4:]
-raw = raw.strip()
-
+prompt = f”Crea un workflow n8n completo para:\n{descripcion}\nDevuelve SOLO el JSON.”
+raw = or_chat(SYS_N8N, [{“role”: “user”, “content”: prompt}], max_tokens=4000)
+if “`" in raw: raw = raw.split("`”)[1].lstrip(“json”).strip()
 return json.loads(raw)
-```
 
-# ══════════════════════════════════════════════
+SYS_ASIST = “”“Eres CLAW CORE, asistente de Mau. Experto en n8n y automatizaciones.
+Mau vende flujos n8n a restaurantes y negocios. Responde en espanol, directo y practico.”””
 
-# BLOQUE 3 — RESPUESTAS GENERALES (IA)
+def respuesta_general(texto, historial):
+msgs = historial[-8:] + [{“role”: “user”, “content”: texto}]
+return or_chat(SYS_ASIST, msgs, max_tokens=800)
 
-# ══════════════════════════════════════════════
-
-SYSTEM_ASISTENTE = “””
-Eres CLAW CORE, el asistente personal de Mau, experto en n8n y automatizaciones.
-Mau tiene un negocio vendiendo flujos de n8n a restaurantes y otros negocios.
-
-Tu personalidad: directo, técnico, eficiente. Ayudas a crear flujos rentables.
-Respondes en español. Máximo 3-4 párrafos en respuestas normales.
-
-Cuando el usuario pregunte sobre estrategias de negocio, precios, qué flujos vender,
-dales consejos prácticos y concretos basados en el mercado de automatizaciones.
-“””
-
-async def respuesta_general(texto: str, historial: list) -> str:
-“”“Responde preguntas generales con contexto del historial.”””
-msgs = historial[-10:] + [{“role”: “user”, “content”: texto}]
-
-```
-r = claude.messages.create(
-    model="claude-haiku-4-5",
-    max_tokens=1000,
-    system=SYSTEM_ASISTENTE,
-    messages=msgs
+def explicar_cmd(cmd):
+return or_chat(
+“Explica comandos bash de forma corta.”,
+[{“role”: “user”, “content”: f”Explica en 2 lineas que hace este comando y si es seguro:\n`{cmd}`”}],
+max_tokens=150,
 )
-return r.content[0].text.strip()
-```
 
-# ══════════════════════════════════════════════
-
-# BLOQUE 4 — COMANDOS DE SISTEMA
-
-# ══════════════════════════════════════════════
-
-async def explicar_comando(cmd: str) -> str:
-“”“Usa IA para explicar qué hace un comando antes de ejecutarlo.”””
-r = claude.messages.create(
-model=“claude-haiku-4-5”,
-max_tokens=300,
-messages=[{
-“role”: “user”,
-“content”: f”Explica en 2-3 líneas qué hace este comando bash y si es seguro ejecutarlo:\n`{cmd}`\nSé directo y menciona cualquier riesgo.”
-}]
-)
-return r.content[0].text.strip()
-
-def ejecutar_comando(cmd: str) -> str:
-“”“Ejecuta un comando en el servidor y retorna el output.”””
+def ejecutar_cmd(cmd):
 try:
-result = subprocess.run(
-cmd, shell=True, capture_output=True, text=True, timeout=30
-)
-out = result.stdout + result.stderr
-return out.strip()[:3000] if out.strip() else “✅ Ejecutado sin output.”
+res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+out = (res.stdout + res.stderr).strip()
+return out[:3000] if out else “Ejecutado sin output.”
 except subprocess.TimeoutExpired:
-return “⏱ Timeout: el comando tardó más de 30s”
+return “Timeout: el comando tardo mas de 30s”
 except Exception as e:
-return f”❌ Error: {e}”
+return f”Error: {e}”
 
-# ══════════════════════════════════════════════
+def hdrs():
+return {“X-N8N-API-KEY”: N8N_API_KEY, “Content-Type”: “application/json”}
 
-# BLOQUE 5 — API n8n
-
-# ══════════════════════════════════════════════
-
-def n8n_headers():
-return {
-“X-N8N-API-KEY”: N8N_API_KEY,
-“Content-Type”: “application/json”
-}
-
-def normalizar_workflow(wf: dict) -> dict:
-“”“Limpia el JSON para que n8n lo acepte al importar.”””
-wf.pop(“id”, None)
-wf.pop(“active”, None)
-wf.pop(“createdAt”, None)
-wf.pop(“updatedAt”, None)
-wf.pop(“versionId”, None)
-
-```
-wf.setdefault("settings", {"executionOrder": "v1"})
-wf.setdefault("pinData", {})
-wf.setdefault("connections", {})
-
-for node in wf.get("nodes", []):
-    node.setdefault("parameters", {})
-    node.setdefault("position", [300, 300])
-    node.setdefault("typeVersion", 1)
-    if not node.get("id"):
-        node["id"] = f"node_{node['name'].replace(' ', '_').lower()}"
-
+def normalizar(wf):
+for k in [“id”, “active”, “createdAt”, “updatedAt”, “versionId”]:
+wf.pop(k, None)
+wf.setdefault(“settings”, {“executionOrder”: “v1”})
+wf.setdefault(“pinData”, {})
+wf.setdefault(“connections”, {})
+for n in wf.get(“nodes”, []):
+n.setdefault(“parameters”, {})
+n.setdefault(“position”, [300, 300])
+n.setdefault(“typeVersion”, 1)
+if not n.get(“id”):
+n[“id”] = n.get(“name”, “node”).replace(” “, “_”).lower()
 return wf
-```
 
-def crear_workflow_n8n(wf: dict) -> dict:
-wf = normalizar_workflow(wf)
-r = requests.post(
-f”{N8N_URL}/api/v1/workflows”,
-headers=n8n_headers(),
-json=wf,
-timeout=15
-)
+def n8n_crear(wf):
+wf = normalizar(wf)
+r = requests.post(f”{N8N_URL}/api/v1/workflows”, headers=hdrs(), json=wf, timeout=15)
+try: return r.json()
+except: return {“error”: r.text}
+
+def n8n_listar():
+r = requests.get(f”{N8N_URL}/api/v1/workflows”, headers=hdrs(), timeout=10)
 try:
-return r.json()
-except:
-return {“error”: r.text, “status”: r.status_code}
+d = r.json()
+return d.get(“data”, d) if isinstance(d, dict) else d
+except: return []
 
-def listar_workflows_n8n() -> list:
-r = requests.get(
-f”{N8N_URL}/api/v1/workflows”,
-headers=n8n_headers(),
-timeout=10
-)
-try:
-data = r.json()
-return data.get(“data”, data) if isinstance(data, dict) else data
-except:
-return []
+def n8n_get(wid):
+r = requests.get(f”{N8N_URL}/api/v1/workflows/{wid}”, headers=hdrs(), timeout=10)
+try: return r.json()
+except: return {}
 
-def obtener_workflow_n8n(wf_id: str) -> dict:
-r = requests.get(
-f”{N8N_URL}/api/v1/workflows/{wf_id}”,
-headers=n8n_headers(),
-timeout=10
-)
-try:
-return r.json()
-except:
-return {}
+def n8n_update(wid, wf):
+wf = normalizar(wf)
+r = requests.put(f”{N8N_URL}/api/v1/workflows/{wid}”, headers=hdrs(), json=wf, timeout=15)
+try: return r.json()
+except: return {“error”: r.text}
 
-def actualizar_workflow_n8n(wf_id: str, wf: dict) -> dict:
-wf = normalizar_workflow(wf)
-r = requests.put(
-f”{N8N_URL}/api/v1/workflows/{wf_id}”,
-headers=n8n_headers(),
-json=wf,
-timeout=15
-)
-try:
-return r.json()
-except:
-return {“error”: r.text}
+def n8n_toggle(wid, activar):
+ep = “activate” if activar else “deactivate”
+r = requests.post(f”{N8N_URL}/api/v1/workflows/{wid}/{ep}”, headers=hdrs(), timeout=10)
+try: return r.json()
+except: return {“error”: r.text}
 
-def activar_workflow_n8n(wf_id: str, activar: bool) -> dict:
-endpoint = “activate” if activar else “deactivate”
-r = requests.post(
-f”{N8N_URL}/api/v1/workflows/{wf_id}/{endpoint}”,
-headers=n8n_headers(),
-timeout=10
-)
-try:
-return r.json()
-except:
-return {“error”: r.text}
-
-# ══════════════════════════════════════════════
-
-# BLOQUE 6 — HANDLERS TELEGRAM
-
-# ══════════════════════════════════════════════
-
-async def handle_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
-“”“Handler principal — clasifica y responde.”””
+async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 uid = update.effective_user.id
 if uid != ALLOWED_USER:
 return
 
 ```
 texto = update.message.text
-st = get_estado(uid)
-chat_id = update.effective_chat.id
+st    = get_st(uid)
+chat  = update.effective_chat.id
 
-# Indicador de escritura
-await context.bot.send_chat_action(chat_id, "typing")
+await ctx.bot.send_chat_action(chat, "typing")
 
-# ── Clasificar intención ──
-await update.message.reply_text("🧠 Analizando...")
-intencion = await clasificar_intencion(texto)
-tipo = intencion.get("tipo", "OTRO")
-datos = intencion.get("datos", {})
-
-# ── Guardar en historial ──
-st["historial"].append({"role": "user", "content": texto})
-
-# ─────────────────────────────────────────
-# FLUJO: CREAR
-# ─────────────────────────────────────────
-if tipo == "FLUJO_CREAR":
-    await update.message.reply_text(
-        f"🏗 Generando flujo: *{datos.get('nombre', 'Nuevo workflow')}*\n"
-        f"_{datos.get('descripcion', texto)}_",
-        parse_mode="Markdown"
-    )
-    await context.bot.send_chat_action(chat_id, "typing")
-    
+if st.get("modo") == "modificar" and st.get("flujo"):
+    st["modo"] = None
+    await update.message.reply_text("Modificando flujo...")
     try:
-        wf = await generar_flujo_ia(texto)
+        wf = generar_flujo(texto, st["flujo"])
         st["flujo"] = wf
-        st["flujo_descripcion"] = texto
-        
-        preview = f"*{wf.get('name', 'Workflow')}*\n"
-        preview += f"📦 Nodos: {len(wf.get('nodes', []))}\n"
-        preview += "Nodos incluidos:\n"
-        for n in wf.get("nodes", []):
-            preview += f"  • {n.get('name')} ({n.get('type','').split('.')[-1]})\n"
-        
+        st["flujo_desc"] = texto
+        nodos = "\n".join(f"  - {n.get('name')}" for n in wf.get("nodes", []))
         kb = [
-            [
-                InlineKeyboardButton("🚀 Crear en n8n", callback_data="flujo_crear"),
-                InlineKeyboardButton("📄 Ver JSON",     callback_data="flujo_ver_json"),
-            ],
-            [
-                InlineKeyboardButton("🔄 Regenerar",    callback_data="flujo_regen"),
-                InlineKeyboardButton("✏️ Modificar",    callback_data="flujo_modificar"),
-            ]
+            [InlineKeyboardButton("Crear en n8n", callback_data="f_crear"),
+             InlineKeyboardButton("Ver JSON",     callback_data="f_json")],
+            [InlineKeyboardButton("Regenerar",    callback_data="f_regen"),
+             InlineKeyboardButton("Modificar",    callback_data="f_mod")],
         ]
-        
         await update.message.reply_text(
-            f"✅ Flujo listo:\n{preview}",
-            reply_markup=InlineKeyboardMarkup(kb),
-            parse_mode="Markdown"
+            f"Modificado: *{wf.get('name')}*\n{len(wf.get('nodes',[]))} nodos:\n{nodos}",
+            reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown",
         )
     except Exception as e:
-        await update.message.reply_text(f"❌ Error generando flujo: {e}")
+        await update.message.reply_text(f"Error: `{e}`", parse_mode="Markdown")
+    return
 
-# ─────────────────────────────────────────
-# FLUJO: REPARAR
-# ─────────────────────────────────────────
+intent = clasificar(texto)
+tipo   = intent.get("tipo", "OTRO")
+datos  = intent.get("datos", {})
+st["historial"].append({"role": "user", "content": texto})
+
+if tipo == "FLUJO_CREAR":
+    await update.message.reply_text(
+        f"Generando: *{datos.get('nombre', 'Nuevo flujo')}*...", parse_mode="Markdown"
+    )
+    await ctx.bot.send_chat_action(chat, "typing")
+    try:
+        wf = generar_flujo(texto)
+        st["flujo"] = wf
+        st["flujo_desc"] = texto
+        nodos = "\n".join(
+            f"  - {n.get('name')} ({n.get('type','').split('.')[-1]})"
+            for n in wf.get("nodes", [])
+        )
+        kb = [
+            [InlineKeyboardButton("Crear en n8n", callback_data="f_crear"),
+             InlineKeyboardButton("Ver JSON",     callback_data="f_json")],
+            [InlineKeyboardButton("Regenerar",    callback_data="f_regen"),
+             InlineKeyboardButton("Modificar",    callback_data="f_mod")],
+        ]
+        await update.message.reply_text(
+            f"Flujo listo: *{wf.get('name')}*\n{len(wf.get('nodes',[]))} nodos:\n{nodos}",
+            reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown",
+        )
+    except Exception as e:
+        await update.message.reply_text(f"Error generando flujo:\n`{e}`", parse_mode="Markdown")
+
 elif tipo == "FLUJO_REPARAR":
-    flujos = listar_workflows_n8n()
+    flujos = n8n_listar()
     if not flujos:
-        await update.message.reply_text("⚠️ No encontré flujos en n8n.")
+        await update.message.reply_text("No hay flujos en n8n.")
         return
-    
-    # Mostrar lista para que elija cuál reparar
-    kb = []
-    for f in flujos[:10]:
-        wf_id = f.get("id", "")
-        nombre = f.get("name", f"Workflow {wf_id}")
-        kb.append([InlineKeyboardButton(
-            f"🔧 {nombre}",
-            callback_data=f"reparar_{wf_id}"
-        )])
-    
-    st["repair_descripcion"] = texto
-    
-    await update.message.reply_text(
-        "🔧 ¿Cuál flujo quieres reparar?",
-        reply_markup=InlineKeyboardMarkup(kb)
-    )
+    st["repair_desc"] = texto
+    kb = [
+        [InlineKeyboardButton(f.get("name", "Workflow"), callback_data=f"rep_{f.get('id')}")]
+        for f in flujos[:8]
+    ]
+    await update.message.reply_text("Cual flujo quieres reparar?", reply_markup=InlineKeyboardMarkup(kb))
 
-# ─────────────────────────────────────────
-# FLUJO: LISTAR
-# ─────────────────────────────────────────
 elif tipo == "FLUJO_LISTAR":
-    flujos = listar_workflows_n8n()
+    flujos = n8n_listar()
     if not flujos:
-        await update.message.reply_text("📭 No hay flujos en n8n todavía.")
+        await update.message.reply_text("No hay flujos en n8n.")
         return
-    
-    msg = "📋 *Flujos en n8n:*\n\n"
-    kb = []
+    msg = "*Flujos en n8n:*\n\n"
+    kb  = []
     for f in flujos:
-        wf_id = f.get("id", "")
-        nombre = f.get("name", "Sin nombre")
-        activo = "🟢" if f.get("active") else "🔴"
-        msg += f"{activo} `{wf_id}` — *{nombre}*\n"
+        wid = f.get("id", ""); nom = f.get("name", "Sin nombre")
+        act = "ON" if f.get("active") else "OFF"
+        msg += f"[{act}] *{nom}* `{wid}`\n"
         kb.append([
-            InlineKeyboardButton(f"👁 {nombre}", callback_data=f"ver_{wf_id}"),
-            InlineKeyboardButton("⚡ Toggle",    callback_data=f"toggle_{wf_id}_{str(not f.get('active')).lower()}")
+            InlineKeyboardButton(f"Ver {nom}", callback_data=f"ver_{wid}"),
+            InlineKeyboardButton("Toggle",     callback_data=f"tog_{wid}_{str(not f.get('active')).lower()}"),
         ])
-    
-    await update.message.reply_text(
-        msg, parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(kb)
-    )
+    await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
 
-# ─────────────────────────────────────────
-# COMANDO DE SISTEMA
-# ─────────────────────────────────────────
 elif tipo == "CMD_SISTEMA":
     cmd = datos.get("cmd_sugerido", "")
-    
     if not cmd:
-        # Pedir al modelo que sugiera el comando
-        r = claude.messages.create(
-            model="claude-haiku-4-5",
-            max_tokens=100,
-            messages=[{
-                "role": "user",
-                "content": f"Dame SOLO el comando bash para: {texto}\nSin explicación, solo el comando."
-            }]
-        )
-        cmd = r.content[0].text.strip().strip("`")
-    
+        cmd = or_chat(
+            "Responde SOLO con el comando bash, sin explicacion ni markdown.",
+            [{"role": "user", "content": f"Comando bash para: {texto}"}],
+            max_tokens=60,
+        ).strip("`")
     st["cmd"] = cmd
-    explicacion = await explicar_comando(cmd)
-    
+    exp = explicar_cmd(cmd)
     kb = [
-        [
-            InlineKeyboardButton("✅ Ejecutar", callback_data="cmd_ejecutar"),
-            InlineKeyboardButton("❌ Cancelar", callback_data="cmd_cancelar"),
-        ],
-        [
-            InlineKeyboardButton("🔍 Explicar más", callback_data="cmd_explicar"),
-        ]
+        [InlineKeyboardButton("Ejecutar",    callback_data="cmd_run"),
+         InlineKeyboardButton("Cancelar",    callback_data="cmd_no")],
+        [InlineKeyboardButton("Mas detalle", callback_data="cmd_exp")],
     ]
-    
     await update.message.reply_text(
-        f"⚡ *Comando detectado:*\n`{cmd}`\n\n"
-        f"📖 *Qué hace:*\n{explicacion}",
-        reply_markup=InlineKeyboardMarkup(kb),
-        parse_mode="Markdown"
+        f"Comando:\n`{cmd}`\n\n{exp}",
+        reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown",
     )
 
-# ─────────────────────────────────────────
-# PREGUNTA / CONVERSACIÓN
-# ─────────────────────────────────────────
 else:
-    await context.bot.send_chat_action(chat_id, "typing")
-    resp = await respuesta_general(texto, st["historial"])
+    await ctx.bot.send_chat_action(chat, "typing")
+    resp = respuesta_general(texto, st["historial"])
     st["historial"].append({"role": "assistant", "content": resp})
     await update.message.reply_text(resp)
 ```
 
-# ══════════════════════════════════════════════
-
-# BLOQUE 7 — CALLBACK BUTTONS
-
-# ══════════════════════════════════════════════
-
-async def handle_botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
-query = update.callback_query
-await query.answer()
+async def botones(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+q    = update.callback_query
+await q.answer()
+uid  = q.from_user.id
+chat = q.message.chat.id
+cd   = q.data
+st   = get_st(uid)
 
 ```
-uid   = query.from_user.id
-cdata = query.data
-chat  = query.message.chat.id
-st    = get_estado(uid)
-
-# ── FLUJOS ──────────────────────────────
-if cdata == "flujo_crear":
+if cd == "f_crear":
     if not st.get("flujo"):
-        await context.bot.send_message(chat, "❌ No hay flujo en memoria.")
+        await ctx.bot.send_message(chat, "No hay flujo en memoria.")
         return
-    await context.bot.send_message(chat, "🚀 Enviando a n8n...")
-    res = crear_workflow_n8n(st["flujo"])
-    wf_id = res.get("id", "")
-    nombre = res.get("name", "")
-    if wf_id:
-        await context.bot.send_message(
+    await ctx.bot.send_message(chat, "Enviando a n8n...")
+    res = n8n_crear(st["flujo"])
+    wid = res.get("id", "")
+    if wid:
+        await ctx.bot.send_message(
             chat,
-            f"✅ *Flujo creado exitosamente!*\n"
-            f"📛 Nombre: {nombre}\n"
-            f"🆔 ID: `{wf_id}`\n"
-            f"🔗 {N8N_URL}/workflow/{wf_id}",
-            parse_mode="Markdown"
+            f"Flujo creado!\nID: `{wid}`\n{N8N_URL}/workflow/{wid}",
+            parse_mode="Markdown",
         )
     else:
-        await context.bot.send_message(chat, f"❌ Error: {res}")
+        await ctx.bot.send_message(chat, f"Error: {res}")
 
-elif cdata == "flujo_ver_json":
+elif cd == "f_json":
     if not st.get("flujo"):
-        await context.bot.send_message(chat, "❌ No hay flujo en memoria.")
+        await ctx.bot.send_message(chat, "No hay flujo en memoria.")
         return
     txt = json.dumps(st["flujo"], indent=2, ensure_ascii=False)
-    # Telegram tiene límite de 4096 chars por mensaje
     for i in range(0, len(txt), 3800):
-        chunk = txt[i:i+3800]
-        await context.bot.send_message(
-            chat, f"```json\n{chunk}\n```", parse_mode="Markdown"
-        )
+        await ctx.bot.send_message(chat, f"```json\n{txt[i:i+3800]}\n```", parse_mode="Markdown")
 
-elif cdata == "flujo_regen":
-    desc = st.get("flujo_descripcion", "flujo genérico")
-    await context.bot.send_message(chat, "🔄 Regenerando con IA...")
+elif cd == "f_regen":
+    desc = st.get("flujo_desc", "flujo para negocio")
+    await ctx.bot.send_message(chat, "Regenerando...")
     try:
-        wf = await generar_flujo_ia(desc)
+        wf = generar_flujo(desc)
         st["flujo"] = wf
-        preview = f"✅ Regenerado: *{wf.get('name')}*\n📦 {len(wf.get('nodes',[]))} nodos"
-        kb = [[
-            InlineKeyboardButton("🚀 Crear en n8n", callback_data="flujo_crear"),
-            InlineKeyboardButton("📄 Ver JSON",     callback_data="flujo_ver_json"),
-        ]]
-        await context.bot.send_message(
-            chat, preview,
-            reply_markup=InlineKeyboardMarkup(kb),
-            parse_mode="Markdown"
+        kb = [
+            [InlineKeyboardButton("Crear en n8n", callback_data="f_crear"),
+             InlineKeyboardButton("Ver JSON",     callback_data="f_json")],
+        ]
+        await ctx.bot.send_message(
+            chat, f"Regenerado: *{wf.get('name')}*",
+            reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown",
         )
     except Exception as e:
-        await context.bot.send_message(chat, f"❌ Error: {e}")
+        await ctx.bot.send_message(chat, f"Error: {e}")
 
-elif cdata == "flujo_modificar":
-    await context.bot.send_message(
-        chat,
-        "✏️ Dime qué quieres cambiar del flujo actual.\n"
-        "Ejemplo: _'Agrega un nodo de WhatsApp para notificar al dueño'_",
-        parse_mode="Markdown"
-    )
+elif cd == "f_mod":
     st["modo"] = "modificar"
+    await ctx.bot.send_message(chat, "Dime que quieres cambiar del flujo actual:")
 
-# ── REPARAR ─────────────────────────────
-elif cdata.startswith("reparar_"):
-    wf_id = cdata.replace("reparar_", "")
-    await context.bot.send_message(chat, f"🔍 Obteniendo flujo `{wf_id}`...", parse_mode="Markdown")
-    
-    flujo_actual = obtener_workflow_n8n(wf_id)
-    if not flujo_actual:
-        await context.bot.send_message(chat, "❌ No pude obtener el flujo.")
+elif cd.startswith("rep_") and cd != "rep_guardar":
+    wid = cd[4:]
+    await ctx.bot.send_message(chat, f"Obteniendo flujo `{wid}`...", parse_mode="Markdown")
+    fl = n8n_get(wid)
+    if not fl:
+        await ctx.bot.send_message(chat, "No pude obtener el flujo.")
         return
-    
-    desc = st.get("repair_descripcion", "Revisa y repara todos los errores posibles")
-    await context.bot.send_message(chat, "🔧 Reparando con IA...")
-    
+    desc = st.get("repair_desc", "Revisa y repara todos los errores posibles")
+    await ctx.bot.send_message(chat, "Reparando con IA...")
     try:
-        flujo_reparado = await generar_flujo_ia(desc, flujo_actual)
-        st["flujo"] = flujo_reparado
-        st["repair_id"] = wf_id
-        
-        kb = [[
-            InlineKeyboardButton("💾 Guardar reparación", callback_data="flujo_guardar_reparacion"),
-            InlineKeyboardButton("📄 Ver JSON",            callback_data="flujo_ver_json"),
-        ]]
-        await context.bot.send_message(
+        fl_rep = generar_flujo(desc, fl)
+        st["flujo"]     = fl_rep
+        st["repair_id"] = wid
+        kb = [
+            [InlineKeyboardButton("Guardar reparacion", callback_data="rep_guardar"),
+             InlineKeyboardButton("Ver JSON",           callback_data="f_json")],
+        ]
+        await ctx.bot.send_message(
             chat,
-            f"✅ Flujo reparado: *{flujo_reparado.get('name')}*\n"
-            f"¿Guardarlo en n8n?",
-            reply_markup=InlineKeyboardMarkup(kb),
-            parse_mode="Markdown"
+            f"Reparado: *{fl_rep.get('name')}*\nGuardarlo en n8n?",
+            reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown",
         )
     except Exception as e:
-        await context.bot.send_message(chat, f"❌ Error reparando: {e}")
+        await ctx.bot.send_message(chat, f"Error reparando: {e}")
 
-elif cdata == "flujo_guardar_reparacion":
-    wf_id = st.get("repair_id")
-    if not wf_id or not st.get("flujo"):
-        await context.bot.send_message(chat, "❌ Sin datos de reparación.")
+elif cd == "rep_guardar":
+    wid = st.get("repair_id")
+    fl  = st.get("flujo")
+    if not wid or not fl:
+        await ctx.bot.send_message(chat, "Sin datos de reparacion.")
         return
-    res = actualizar_workflow_n8n(wf_id, st["flujo"])
-    if res.get("id"):
-        await context.bot.send_message(chat, f"✅ Flujo `{wf_id}` actualizado correctamente!", parse_mode="Markdown")
-    else:
-        await context.bot.send_message(chat, f"❌ Error guardando: {res}")
+    res = n8n_update(wid, fl)
+    ok  = "OK" if res.get("id") else "Error"
+    await ctx.bot.send_message(chat, f"{ok}: flujo `{wid}` actualizado", parse_mode="Markdown")
 
-# ── VER FLUJO ────────────────────────────
-elif cdata.startswith("ver_"):
-    wf_id = cdata.replace("ver_", "")
-    flujo = obtener_workflow_n8n(wf_id)
-    if flujo:
-        info = (
-            f"📋 *{flujo.get('name')}*\n"
-            f"🆔 ID: `{wf_id}`\n"
-            f"📦 Nodos: {len(flujo.get('nodes',[]))}\n"
-            f"🟢 Activo: {flujo.get('active', False)}\n"
-        )
-        for n in flujo.get("nodes", []):
-            info += f"  • {n.get('name')}\n"
-        
-        kb = [[
-            InlineKeyboardButton("🔧 Reparar este flujo", callback_data=f"reparar_{wf_id}"),
-            InlineKeyboardButton("📄 Ver JSON",            callback_data=f"json_{wf_id}"),
-        ]]
-        await context.bot.send_message(
-            chat, info, parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(kb)
+elif cd.startswith("ver_"):
+    wid = cd[4:]
+    fl  = n8n_get(wid)
+    if fl:
+        nodos = "\n".join(f"  - {n.get('name')}" for n in fl.get("nodes", []))
+        kb = [
+            [InlineKeyboardButton("Reparar", callback_data=f"rep_{wid}"),
+             InlineKeyboardButton("JSON",    callback_data=f"js_{wid}")],
+        ]
+        await ctx.bot.send_message(
+            chat,
+            f"*{fl.get('name')}*\nID: `{wid}`\n{len(fl.get('nodes',[]))} nodos:\n{nodos}",
+            reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown",
         )
 
-elif cdata.startswith("json_"):
-    wf_id = cdata.replace("json_", "")
-    flujo = obtener_workflow_n8n(wf_id)
-    if flujo:
-        txt = json.dumps(flujo, indent=2, ensure_ascii=False)
-        for i in range(0, min(len(txt), 7600), 3800):
-            await context.bot.send_message(
-                chat, f"```json\n{txt[i:i+3800]}\n```", parse_mode="Markdown"
-            )
+elif cd.startswith("js_"):
+    fl  = n8n_get(cd[3:])
+    txt = json.dumps(fl, indent=2, ensure_ascii=False) if fl else "{}"
+    for i in range(0, min(len(txt), 7600), 3800):
+        await ctx.bot.send_message(chat, f"```json\n{txt[i:i+3800]}\n```", parse_mode="Markdown")
 
-# ── TOGGLE ACTIVO/INACTIVO ───────────────
-elif cdata.startswith("toggle_"):
-    parts = cdata.split("_")
-    wf_id   = parts[1]
+elif cd.startswith("tog_"):
+    parts   = cd.split("_")
+    wid     = parts[1]
     activar = parts[2] == "true"
-    res = activar_workflow_n8n(wf_id, activar)
-    estado_str = "activado 🟢" if activar else "desactivado 🔴"
-    await context.bot.send_message(
+    res     = n8n_toggle(wid, activar)
+    txt     = "activado" if activar else "desactivado"
+    await ctx.bot.send_message(
         chat,
-        f"{'✅' if res.get('id') else '❌'} Flujo `{wf_id}` {estado_str}",
-        parse_mode="Markdown"
+        f"{'OK' if res.get('id') else 'Error'}: flujo {txt}",
     )
 
-# ── COMANDOS DE SISTEMA ──────────────────
-elif cdata == "cmd_ejecutar":
-    cmd = st.get("cmd")
+elif cd == "cmd_run":
+    cmd = st.get("cmd", "")
     if not cmd:
-        await context.bot.send_message(chat, "❌ No hay comando en memoria.")
+        await ctx.bot.send_message(chat, "Sin comando en memoria.")
         return
-    await context.bot.send_message(chat, f"⚡ Ejecutando: `{cmd}`", parse_mode="Markdown")
-    output = ejecutar_comando(cmd)
-    await context.bot.send_message(chat, f"```\n{output[:3800]}\n```", parse_mode="Markdown")
+    await ctx.bot.send_message(chat, f"Ejecutando: `{cmd}`", parse_mode="Markdown")
+    out = ejecutar_cmd(cmd)
+    await ctx.bot.send_message(chat, f"```\n{out}\n```", parse_mode="Markdown")
 
-elif cdata == "cmd_cancelar":
+elif cd == "cmd_no":
     st["cmd"] = None
-    await context.bot.send_message(chat, "❌ Comando cancelado.")
+    await ctx.bot.send_message(chat, "Comando cancelado.")
 
-elif cdata == "cmd_explicar":
+elif cd == "cmd_exp":
     cmd = st.get("cmd", "")
     if cmd:
-        exp = await explicar_comando(cmd)
-        # Más detalle
-        r = claude.messages.create(
-            model="claude-haiku-4-5",
-            max_tokens=500,
-            messages=[{
-                "role": "user",
-                "content": f"Explica en detalle, paso a paso, qué hace este comando bash en Ubuntu, sus flags y posibles efectos:\n`{cmd}`"
-            }]
+        det = or_chat(
+            "Explica comandos bash en detalle tecnico.",
+            [{"role": "user", "content": f"Explica flags y efectos de:\n`{cmd}`"}],
+            max_tokens=400,
         )
-        detalle = r.content[0].text.strip()
-        await context.bot.send_message(chat, f"🔍 *Detalle del comando:*\n\n{detalle}", parse_mode="Markdown")
+        await ctx.bot.send_message(chat, det)
 ```
 
-# ══════════════════════════════════════════════
-
-# BLOQUE 8 — COMANDO /start Y /help
-
-# ══════════════════════════════════════════════
-
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 if update.effective_user.id != ALLOWED_USER:
 return
 await update.message.reply_text(
-“⚡ *CLAW CORE* — Tu asistente n8n\n\n”
-“Puedes pedirme:\n”
-“🏗 *Crear flujos* — ‘Crea un flujo para tomar pedidos en WhatsApp’\n”
-“🔧 *Reparar flujos* — ‘Repara el flujo que está fallando’\n”
-“📋 *Listar flujos* — ‘Muéstrame mis flujos en n8n’\n”
-“⚡ *Comandos* — ‘Cuánta memoria queda en la BMAX’\n”
-“💬 *Preguntas* — ‘Qué precio le pongo al flujo de reservas’\n\n”
-“Simplemente escríbeme en lenguaje natural 🤙”,
-parse_mode=“Markdown”
+“*CLAW CORE* listo\n\n”
+“Ejemplos:\n”
+“- Crea un flujo de pedidos por WhatsApp para restaurante\n”
+“- Repara el flujo que esta fallando\n”
+“- Muestrame mis flujos en n8n\n”
+“- Cuanta RAM queda en la BMAX\n”
+“- A que precio vendo el flujo de reservas\n\n”
+“/estado - estado del sistema”,
+parse_mode=“Markdown”,
 )
 
-async def cmd_estado(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_estado(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 if update.effective_user.id != ALLOWED_USER:
 return
-flujos = listar_workflows_n8n()
-activos = sum(1 for f in flujos if f.get(“active”))
+flujos = n8n_listar()
+act    = sum(1 for f in flujos if f.get(“active”))
+ram    = ejecutar_cmd(“free -h | awk ‘/^Mem/{print $3"/"$2}’”)
+disco  = ejecutar_cmd(“df -h / | awk ‘NR==2{print $3"/"$2}’”)
 await update.message.reply_text(
-f”📊 *Estado del sistema:*\n”
-f”🌐 n8n: {‘✅ Online’ if flujos is not None else ‘❌ Offline’}\n”
-f”📦 Flujos totales: {len(flujos)}\n”
-f”🟢 Activos: {activos}\n”
-f”🔴 Inactivos: {len(flujos) - activos}”,
-parse_mode=“Markdown”
+f”*Sistema:*\n”
+f”n8n: {‘OK’ if flujos is not None else ‘Sin conexion’}\n”
+f”Flujos: {len(flujos)} ({act} activos)\n”
+f”RAM: {ram}\n”
+f”Disco: {disco}\n”
+f”Modelo: {MODELO}”,
+parse_mode=“Markdown”,
 )
 
-# ══════════════════════════════════════════════
-
-# MAIN
-
-# ══════════════════════════════════════════════
-
-def main():
-print(“🔥 CLAW CORE iniciando…”)
-
-```
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+app.add_handler(CommandHandler(“start”,  cmd_start))
+app.add_handler(CommandHandler(“estado”, cmd_estado))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+app.add_handler(CallbackQueryHandler(botones))
 
-app.add_handler(CommandHandler("start", cmd_start))
-app.add_handler(CommandHandler("estado", cmd_estado))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_mensaje))
-app.add_handler(CallbackQueryHandler(handle_botones))
-
-print("✅ Bot listo — esperando mensajes")
+print(f”CLAW CORE activo | modelo: {MODELO} | usuario: {ALLOWED_USER}”)
 app.run_polling(drop_pending_updates=True)
-```
-
-if **name** == “**main**”:
-main()
