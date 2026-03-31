@@ -24,6 +24,13 @@ N8N_URL        = os.getenv("N8N_URL")
 N8N_API_KEY    = os.getenv("N8N_API_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
+# 🔥 VALIDACIÓN CLAVE
+if not OPENROUTER_API_KEY:
+    print("❌ ERROR: OPENROUTER_API_KEY no cargada")
+    exit()
+
+print("✅ OPENROUTER OK")
+
 estado = {}
 
 # =========================
@@ -48,7 +55,7 @@ def llamar_ia(system, user_msg, max_tokens=3000):
         r = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
             headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Authorization": f"Bearer {OPENROUTER_API_KEY.strip()}",
                 "Content-Type": "application/json",
                 "HTTP-Referer": "http://localhost",
                 "X-Title": "CLAW CORE",
@@ -96,11 +103,10 @@ SYS_N8N = """
 Eres experto en n8n.
 
 Devuelve SOLO JSON válido.
+Sin texto adicional.
 
-Reglas:
-- Debe incluir: name, nodes, connections, settings, pinData
-- Sin markdown
-- Sin texto adicional
+Debe incluir:
+name, nodes, connections, settings, pinData
 """
 
 def agente_generador(prompt, base=None):
@@ -126,7 +132,7 @@ def agente_validador(wf):
 
 
 def agente_autofix(wf):
-    # limpiar campos prohibidos n8n
+    # limpiar root
     campos = [
         "id", "active", "meta", "versionId",
         "staticData", "createdAt", "updatedAt"
@@ -136,12 +142,21 @@ def agente_autofix(wf):
         wf.pop(c, None)
 
     wf["settings"] = {}
+    wf["pinData"] = {}
 
     for n in wf.get("nodes", []):
+
+        # ID nuevo SIEMPRE
         n["id"] = str(uuid.uuid4())
+
         n.setdefault("parameters", {})
         n.setdefault("typeVersion", 1)
         n.setdefault("position", [300, 300])
+
+        # 🔥 FIX DEFINITIVO CREDENTIALS
+        if "credentials" in n:
+            if not isinstance(n["credentials"], dict):
+                del n["credentials"]
 
     return wf
 
@@ -154,6 +169,11 @@ def modo_autonomo(prompt):
         print(f"🚀 Intento {i+1}")
 
         wf = agente_generador(prompt)
+
+        if not wf:
+            print("⚠️ IA devolvió vacío")
+            continue
+
         wf = agente_validador(wf)
         wf = agente_autofix(wf)
 
@@ -175,6 +195,8 @@ def hdrs():
     }
 
 def crear(workflow):
+    workflow = agente_autofix(workflow)
+
     r = requests.post(
         f"{N8N_URL}/api/v1/workflows",
         headers=hdrs(),
@@ -183,23 +205,12 @@ def crear(workflow):
     )
 
     print("STATUS:", r.status_code)
-    print("RESP:", r.text[:300])
+    print("RESP:", r.text[:500])
 
     try:
         return r.json()
     except:
         return {"error": r.text}
-
-# =========================
-# 🔧 SISTEMA
-# =========================
-
-def ejecutar_cmd(cmd):
-    try:
-        res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=20)
-        return res.stdout[:2000]
-    except Exception as e:
-        return str(e)
 
 # =========================
 # 🤖 BOT
@@ -254,7 +265,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🚀 CLAW CORE PRO ACTIVO\n\n"
         "Ejemplo:\n"
-        "Crea un flujo de WhatsApp con OCR y validación de pagos"
+        "Crea un flujo de verificación de pagos con WhatsApp y correo banco"
     )
 
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
