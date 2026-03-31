@@ -16,12 +16,12 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 ALLOWED_USER = int(os.getenv("ALLOWED_USER"))
 N8N_URL = os.getenv("N8N_URL")
 N8N_API_KEY = os.getenv("N8N_API_KEY")
-OPENAI_KEY = os.getenv("OPENAI_KEY")  # para modo inteligente
+OPENAI_KEY = os.getenv("OPENAI_KEY")
 
 estado = {}
 
 # =========================
-# 🧠 GENERADOR BASE PRO
+# 🧠 BASE (NO TOCAR)
 # =========================
 
 def generar_flujo_base():
@@ -67,14 +67,9 @@ def generar_flujo_base():
                     "functionCode": """
 const raw = JSON.stringify($json);
 let texto = raw.toLowerCase();
-
-// extracción inteligente
 let referencia = (texto.match(/\\d{6,}/) || [''])[0];
 let monto = (texto.match(/\\d{4,}/) || [''])[0];
-
-return [{
-  json: { texto, referencia, monto }
-}];
+return [{ json: { texto, referencia, monto } }];
 """
                 }
             },
@@ -87,13 +82,8 @@ return [{
                 "parameters": {
                     "functionCode": """
 const { referencia, monto } = $json;
-
-// 🔥 modo producción (simulación)
 const aprobado = referencia && monto;
-
-return [{
-  json: { aprobado, referencia, monto }
-}];
+return [{ json: { aprobado, referencia, monto } }];
 """
                 }
             },
@@ -166,10 +156,10 @@ return [{
     }
 
 # =========================
-# 🧠 IA GENERADORA DESDE TEXTO
+# 🧠 AGENTES IA
 # =========================
 
-def generar_desde_texto(prompt):
+def agente_generador(prompt):
     try:
         r = requests.post(
             "https://api.openai.com/v1/chat/completions",
@@ -177,39 +167,50 @@ def generar_desde_texto(prompt):
             json={
                 "model": "gpt-4o-mini",
                 "messages": [
-                    {"role": "system", "content": "Genera workflows válidos de n8n en JSON limpio sin metadata."},
+                    {"role": "system", "content": "Genera workflows n8n válidos sin metadata extra"},
                     {"role": "user", "content": prompt}
                 ]
             }
         )
-
-        data = r.json()
-        contenido = data["choices"][0]["message"]["content"]
-
-        return json.loads(contenido)
-
+        return json.loads(r.json()["choices"][0]["message"]["content"])
     except:
         return generar_flujo_base()
 
-# =========================
-# 🧹 LIMPIADOR REAL (FIX ERROR 400)
-# =========================
+def agente_validador(wf):
+    # asegura estructura mínima
+    if "nodes" not in wf or not wf["nodes"]:
+        return generar_flujo_base()
+    return wf
 
-def limpiar(workflow):
+def agente_autofix(wf):
+    # 🔥 FIX CRÍTICO N8N
+    wf["settings"] = {}
     for k in ["id","active","meta","versionId","staticData","pinData","createdAt","updatedAt"]:
-        workflow.pop(k, None)
-
-    # 🔥 CRÍTICO: settings vacío
-    workflow["settings"] = {}
-
-    return workflow
+        wf.pop(k, None)
+    return wf
 
 # =========================
-# 🔁 CREAR EN N8N
+# 🧬 MODO AUTÓNOMO TOTAL
+# =========================
+
+def modo_autonomo(prompt):
+    print("🧠 Agente 1: generando...")
+    wf = agente_generador(prompt)
+
+    print("🔍 Agente 2: validando...")
+    wf = agente_validador(wf)
+
+    print("🛠 Agente 3: corrigiendo...")
+    wf = agente_autofix(wf)
+
+    return wf
+
+# =========================
+# 🔁 CREAR
 # =========================
 
 def crear(workflow):
-    wf = limpiar(workflow)
+    wf = agente_autofix(workflow)
 
     r = requests.post(
         f"{N8N_URL}/api/v1/workflows",
@@ -235,11 +236,10 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     texto = update.message.text
 
-    await update.message.reply_text("🧠 Generando flujo inteligente...")
+    await update.message.reply_text("🧠 MODO AUTÓNOMO ACTIVADO...")
 
-    # 🔥 IA o base
     if "bot" in texto.lower():
-        wf = generar_desde_texto(texto)
+        wf = modo_autonomo(texto)
     else:
         wf = generar_flujo_base()
 
@@ -251,7 +251,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
 
     await update.message.reply_text(
-        "🔥 Flujo listo (modo SaaS)",
+        "🔥 Flujo listo (AUTO)",
         reply_markup=InlineKeyboardMarkup(kb)
     )
 
@@ -266,7 +266,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(q.message.chat.id, f"```json\n{txt[:4000]}\n```", parse_mode="Markdown")
 
     elif q.data == "crear":
-        await context.bot.send_message(q.message.chat.id, "🚀 Creando en n8n...")
+        await context.bot.send_message(q.message.chat.id, "🚀 Deploy automático...")
         res = crear(estado[uid])
         await context.bot.send_message(q.message.chat.id, str(res))
 
