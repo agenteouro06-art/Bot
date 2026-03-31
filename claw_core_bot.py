@@ -1,15 +1,11 @@
 import os
 import json
-import random
 import uuid
 import requests
+import subprocess
 from dotenv import load_dotenv
-
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder, MessageHandler, CommandHandler,
-    ContextTypes, CallbackQueryHandler, filters
-)
+from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, ContextTypes, CallbackQueryHandler, filters
 
 # =========================
 # 🔥 ENV
@@ -21,185 +17,241 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 ALLOWED_USER   = int(os.getenv("ALLOWED_USER"))
 N8N_URL        = os.getenv("N8N_URL")
 N8N_API_KEY    = os.getenv("N8N_API_KEY")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-
-if not OPENROUTER_API_KEY:
-    print("❌ ERROR: OPENROUTER_API_KEY no cargada")
-    exit()
-
-print("✅ OPENROUTER OK")
+OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY")
 
 estado = {}
-
-# =========================
-# 🧠 BASE
-# =========================
-
-def generar_flujo_base():
-    return {
-        "name": f"Workflow Base {random.randint(100,999)}",
-        "nodes": [],
-        "connections": {},
-        "settings": {}
-    }
 
 # =========================
 # 🧠 OPENROUTER
 # =========================
 
-def llamar_ia(system, user_msg, max_tokens=3000):
+def llamar_ia(system, user_msg, max_tokens=2000):
     try:
         r = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
             headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY.strip()}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "http://localhost",
-                "X-Title": "CLAW CORE",
+                "Authorization": f"Bearer {OPENROUTER_KEY}",
+                "Content-Type": "application/json"
             },
             json={
                 "model": "anthropic/claude-3-haiku",
-                "max_tokens": max_tokens,
                 "messages": [
                     {"role": "system", "content": system},
-                    {"role": "user", "content": user_msg},
+                    {"role": "user", "content": user_msg}
                 ],
+                "max_tokens": max_tokens
             },
-            timeout=30,
+            timeout=30
         )
-
         data = r.json()
 
         if "error" in data:
-            print("❌ ERROR IA:", data)
+            print("ERROR IA:", data)
             return None
 
-        return data["choices"][0]["message"]["content"].strip()
+        return data["choices"][0]["message"]["content"]
 
     except Exception as e:
-        print("❌ ERROR IA:", e)
+        print("ERROR IA:", e)
         return None
 
+# =========================
+# 🧠 LIMPIAR JSON IA
+# =========================
 
 def limpiar_json_ia(raw):
     if not raw:
         return None
+
     try:
         if "```" in raw:
             raw = raw.split("```")[1]
             raw = raw.replace("json", "").strip()
+
         return json.loads(raw)
     except:
         return None
 
 # =========================
-# 🧬 MULTI-AGENTES
+# 🧠 SYS N8N (REGLAS PRO)
 # =========================
 
 SYS_N8N = """
 Eres experto en n8n.
-Devuelve SOLO JSON válido sin texto adicional.
-Debe incluir: name, nodes, connections, settings
+
+REGLAS CRÍTICAS:
+
+- SOLO puedes usar estos nodos:
+  - n8n-nodes-base.webhook
+  - n8n-nodes-base.httpRequest
+  - n8n-nodes-base.set
+  - n8n-nodes-base.if
+  - n8n-nodes-base.function
+  - n8n-nodes-base.respondToWebhook
+  - n8n-nodes-base.gmail
+  - n8n-nodes-base.telegram
+
+- PROHIBIDO inventar nodos
+- PROHIBIDO usar otros nodos
+
+- Devuelve SOLO JSON válido
+- Flujo debe ser COMPLETO y FUNCIONAL
 """
 
-def agente_generador(prompt):
-    raw = llamar_ia(SYS_N8N, f"Crea flujo n8n completo:\n{prompt}")
-    return limpiar_json_ia(raw)
+# =========================
+# 🧠 AGENTE GENERADOR
+# =========================
 
+def agente_generador(prompt, flujo_base=None):
+    if flujo_base:
+        user_msg = f"""
+Adapta este workflow:
 
-def agente_validador(wf):
-    if not wf:
-        return generar_flujo_base()
+{json.dumps(flujo_base)}
 
-    wf.setdefault("nodes", [])
-    wf.setdefault("connections", {})
-    wf.setdefault("settings", {})
+Para que haga esto:
+{prompt}
+
+NO borres la estructura
+Devuelve JSON limpio
+"""
+    else:
+        user_msg = f"""
+Crea un workflow n8n completo para:
+
+{prompt}
+
+Debe tener webhook, procesamiento y respuesta
+"""
+
+    raw = llamar_ia(SYS_N8N, user_msg)
+    wf = limpiar_json_ia(raw)
+
+    if not wf or not wf.get("nodes"):
+        print("❌ IA falló")
+        return None
 
     return wf
 
+# =========================
+# 🧠 VALIDADOR
+# =========================
 
-# 🔥 FIX DEFINITIVO N8N
+def agente_validador(wf):
+    if not wf or "nodes" not in wf:
+        return None
+    return wf
+
+# =========================
+# 🧠 AUTO FIX (ANTI ERROR 400)
+# =========================
+
 def agente_autofix(wf):
-
-    wf_limpio = {
-        "name": wf.get("name", f"Workflow {random.randint(100,999)}"),
+    limpio = {
+        "name": wf.get("name", "Workflow"),
         "nodes": [],
-        "connections": {},
+        "connections": wf.get("connections", {}),
         "settings": {}
     }
 
-    # LIMPIAR NODOS
     for n in wf.get("nodes", []):
-        nodo = {
+        limpio["nodes"].append({
             "id": str(uuid.uuid4()),
             "name": n.get("name", "Nodo"),
-            "type": n.get("type", "n8n-nodes-base.set"),
-            "typeVersion": n.get("typeVersion", 1),
-            "position": n.get("position", [300, 300]),
+            "type": n.get("type"),
+            "typeVersion": 1,
+            "position": n.get("position", [300,300]),
             "parameters": n.get("parameters", {})
-        }
+        })
 
-        # SOLO credentials si es válido
-        if isinstance(n.get("credentials"), dict):
-            nodo["credentials"] = n["credentials"]
-
-        wf_limpio["nodes"].append(nodo)
-
-    # LIMPIAR CONEXIONES
-    conexiones = wf.get("connections", {})
-
-    for k, v in conexiones.items():
-        if isinstance(v, dict) and "main" in v:
-            wf_limpio["connections"][k] = v
-
-    return wf_limpio
-
+    return limpio
 
 # =========================
-# 🧠 MODO AUTÓNOMO
+# 🧠 N8N API
+# =========================
+
+def hdrs():
+    return {
+        "X-N8N-API-KEY": N8N_API_KEY,
+        "Content-Type": "application/json"
+    }
+
+def n8n_listar():
+    try:
+        r = requests.get(f"{N8N_URL}/api/v1/workflows", headers=hdrs())
+        return r.json().get("data", [])
+    except:
+        return []
+
+def n8n_get(wid):
+    try:
+        r = requests.get(f"{N8N_URL}/api/v1/workflows/{wid}", headers=hdrs())
+        return r.json()
+    except:
+        return None
+
+# =========================
+# 🧠 CLONADOR INTELIGENTE
+# =========================
+
+def buscar_flujo_similar(prompt):
+    flujos = n8n_listar()
+
+    mejor = None
+    mejor_score = 0
+
+    for f in flujos:
+        nombre = f.get("name","").lower()
+        score = sum(1 for w in prompt.lower().split() if w in nombre)
+
+        if score > mejor_score:
+            mejor_score = score
+            mejor = f
+
+    if mejor:
+        print("🧠 Usando plantilla:", mejor["name"])
+        return n8n_get(mejor["id"])
+
+    return None
+
+# =========================
+# 🧠 MODO AUTÓNOMO TOTAL
 # =========================
 
 def modo_autonomo(prompt):
-    for i in range(3):
-        print(f"🚀 Intento {i+1}")
+    print("🧠 MODO AUTÓNOMO TOTAL")
 
-        wf = agente_generador(prompt)
+    base = buscar_flujo_similar(prompt)
 
-        if not wf:
-            continue
+    wf = agente_generador(prompt, base)
 
-        wf = agente_validador(wf)
-        wf = agente_autofix(wf)
+    if not wf:
+        return None
 
-        if wf.get("nodes"):
-            print("✅ Flujo válido")
-            return wf
+    wf = agente_validador(wf)
+    wf = agente_autofix(wf)
 
-    print("⚠️ fallback base")
-    return generar_flujo_base()
+    return wf
 
 # =========================
-# 🔁 N8N API
+# 🚀 CREAR EN N8N
 # =========================
 
 def crear(workflow):
+    if not workflow:
+        print("❌ Flujo inválido")
+        return {"error": "flujo vacío"}
+
     r = requests.post(
         f"{N8N_URL}/api/v1/workflows",
-        headers={
-            "X-N8N-API-KEY": N8N_API_KEY,
-            "Content-Type": "application/json"
-        },
-        json=workflow,
-        timeout=15
+        headers=hdrs(),
+        json=workflow
     )
 
     print("STATUS:", r.status_code)
-    print("RESP:", r.text[:500])
+    print("RESP:", r.text[:300])
 
-    try:
-        return r.json()
-    except:
-        return {"error": r.text}
+    return r.json()
 
 # =========================
 # 🤖 BOT
@@ -212,54 +264,45 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto = update.message.text
     chat  = update.effective_chat.id
 
-    await context.bot.send_message(chat, "🧠 Modo autónomo total activado...")
+    await update.message.reply_text("🧠 Generando flujo...")
 
     wf = modo_autonomo(texto)
 
-    estado["wf"] = wf
+    if not wf:
+        await update.message.reply_text("❌ Error generando flujo")
+        return
 
-    await context.bot.send_message(chat, f"🔥 Flujo listo:\n{wf.get('name')}")
+    estado[chat] = wf
 
-    kb = [[InlineKeyboardButton("Crear en n8n", callback_data="crear")]]
-
-    await context.bot.send_message(
-        chat,
-        "¿Quieres enviarlo a n8n?",
-        reply_markup=InlineKeyboardMarkup(kb)
+    await update.message.reply_text(
+        f"🔥 Flujo listo:\n{wf.get('name')}",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Crear en n8n", callback_data="crear")]
+        ])
     )
 
 async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
 
-    if q.data == "crear":
-        wf = estado.get("wf")
+    chat = q.message.chat.id
 
-        if not wf:
-            await q.message.reply_text("❌ No hay flujo en memoria")
-            return
+    if q.data == "crear":
+        wf = estado.get(chat)
 
         res = crear(wf)
 
-        if res.get("id"):
-            await q.message.reply_text(f"✅ Flujo creado:\nID: {res['id']}")
-        else:
-            await q.message.reply_text(f"❌ Error:\n{res}")
+        await context.bot.send_message(
+            chat,
+            f"✅ Creado:\n{res.get('id')}"
+        )
 
 # =========================
 # 🚀 START
 # =========================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🚀 CLAW CORE PRO ACTIVO\n\n"
-        "Ejemplo:\n"
-        "Crea un flujo que valide pagos de WhatsApp con correo del banco"
-    )
-
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
-app.add_handler(CommandHandler("start", start))
 app.add_handler(MessageHandler(filters.TEXT, handle))
 app.add_handler(CallbackQueryHandler(botones))
 
