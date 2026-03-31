@@ -19,10 +19,9 @@ N8N_API_KEY    = os.getenv("N8N_API_KEY")
 OPENROUTER_KEY = os.getenv("OPENROUTER_KEY")
 
 estado = {}
-historial = []
 
 # =============================
-# 🤖 IA REAL
+# 🤖 IA (GENERADOR / CORRECTOR)
 # =============================
 def llamar_ia(prompt):
     try:
@@ -35,11 +34,14 @@ def llamar_ia(prompt):
             json={
                 "model": "anthropic/claude-3-haiku",
                 "messages": [
-                    {"role": "system", "content": "Eres experto en n8n. SOLO devuelves JSON válido."},
+                    {
+                        "role": "system",
+                        "content": "Eres experto en n8n. SOLO RESPONDES JSON válido, sin texto adicional."
+                    },
                     {"role": "user", "content": prompt}
                 ]
             },
-            timeout=25
+            timeout=30
         )
         return r.json()["choices"][0]["message"]["content"]
     except Exception as e:
@@ -50,6 +52,8 @@ def llamar_ia(prompt):
 # 🧹 LIMPIAR JSON
 # =============================
 def limpiar_json(texto):
+    if not texto:
+        return None
     try:
         inicio = texto.find("{")
         fin = texto.rfind("}") + 1
@@ -58,7 +62,7 @@ def limpiar_json(texto):
         return None
 
 # =============================
-# 🧠 VALIDADOR
+# 🔍 VALIDADOR
 # =============================
 def validar(workflow):
     if not workflow:
@@ -70,22 +74,11 @@ def validar(workflow):
     return True
 
 # =============================
-# 🧬 DETECTOR DE INTENCIÓN
+# 🧬 BASE MINIMA (NO ES FLOW FIJO)
 # =============================
-def detectar_tipo(texto):
-    t = texto.lower()
-    if "pedido" in t or "restaurante" in t:
-        return "pedido"
-    elif "pago" in t or "transferencia" in t:
-        return "pago"
-    return "basico"
-
-# =============================
-# 🧬 MARKETPLACE BASE
-# =============================
-def flow_pedidos():
+def base_minima():
     return {
-        "name": "Pedidos Restaurante",
+        "name": "CLAW Dynamic Flow",
         "nodes": [
             {
                 "id": "1",
@@ -94,42 +87,7 @@ def flow_pedidos():
                 "typeVersion": 2,
                 "position": [200,300],
                 "parameters": {
-                    "path": "pedido",
-                    "httpMethod": "POST",
-                    "responseMode": "lastNode"
-                }
-            },
-            {
-                "id": "2",
-                "name": "Google Sheets",
-                "type": "n8n-nodes-base.googleSheets",
-                "typeVersion": 4,
-                "position": [400,300],
-                "parameters": {
-                    "operation": "read"
-                }
-            }
-        ],
-        "connections": {
-            "Webhook": {
-                "main": [[{"node":"Google Sheets","type":"main","index":0}]]
-            }
-        },
-        "settings": {}
-    }
-
-def flow_pagos():
-    return {
-        "name": "Validar Pagos",
-        "nodes": [
-            {
-                "id": "1",
-                "name": "Webhook",
-                "type": "n8n-nodes-base.webhook",
-                "typeVersion": 2,
-                "position": [200,300],
-                "parameters": {
-                    "path": "pago",
+                    "path": "auto",
                     "httpMethod": "POST",
                     "responseMode": "lastNode"
                 }
@@ -143,7 +101,7 @@ def flow_pagos():
                 "parameters": {
                     "values": {
                         "string": [
-                            {"name":"estado","value":"recibido"}
+                            {"name":"status","value":"ok"}
                         ]
                     }
                 }
@@ -158,7 +116,7 @@ def flow_pagos():
     }
 
 # =============================
-# 🔥 NORMALIZAR
+# 🔧 NORMALIZAR
 # =============================
 def normalizar(workflow):
     for k in ["id","active","meta","versionId","pinData"]:
@@ -199,16 +157,58 @@ def crear_workflow(workflow):
         return {"error": str(e)}
 
 # =============================
-# 🧠 MOTOR IA + FALLBACK
+# 🧠 GENERAR + CORREGIR IA
+# =============================
+def generar_workflow(texto):
+
+    # 1. GENERAR
+    raw = llamar_ia(f"""
+Crea un workflow COMPLETO de n8n en JSON.
+
+REQUISITOS:
+- nodes reales de n8n
+- connections válidas
+- mínimo 3 nodos
+- usar webhook como entrada
+
+Pedido:
+{texto}
+""")
+
+    wf = limpiar_json(raw)
+
+    # 2. VALIDAR
+    if validar(wf):
+        return wf
+
+    # 3. CORREGIR CON IA
+    raw_fix = llamar_ia(f"""
+Corrige este JSON de n8n para que sea válido:
+
+{raw}
+
+Devuelve SOLO JSON válido.
+""")
+
+    wf_fix = limpiar_json(raw_fix)
+
+    if validar(wf_fix):
+        return wf_fix
+
+    # 4. FALLBACK DINÁMICO (NO FIJO)
+    return base_minima()
+
+# =============================
+# 🤖 MOTOR
 # =============================
 async def procesar(update, context, texto):
     uid = update.effective_user.id
 
     pasos = [
-        "🧠 ANALISTA IA...",
+        "🧠 ANALISTA IA real...",
         "🏗 ARQUITECTO IA...",
-        "🎨 DISEÑADOR IA...",
-        "🔍 VALIDANDO JSON...",
+        "🎨 GENERANDO FLOW...",
+        "🔍 VALIDANDO...",
         "⚙ CORRIGIENDO...",
         "💰 OPTIMIZANDO..."
     ]
@@ -217,21 +217,9 @@ async def procesar(update, context, texto):
         await update.message.reply_text(p)
         await asyncio.sleep(0.3)
 
-    raw = llamar_ia(f"Genera workflow n8n JSON:\n{texto}")
-    wf = limpiar_json(raw)
-
-    if not validar(wf):
-        await update.message.reply_text("⚠ IA falló → usando marketplace")
-
-        tipo = detectar_tipo(texto)
-
-        if tipo == "pedido":
-            wf = flow_pedidos()
-        else:
-            wf = flow_pagos()
+    wf = generar_workflow(texto)
 
     estado[uid] = wf
-    historial.append(wf)
 
     kb = [
         [
@@ -245,7 +233,7 @@ async def procesar(update, context, texto):
     ]
 
     await update.message.reply_text(
-        "💀 ULTRA FLOW listo",
+        "💀 FLOW generado dinámicamente",
         reply_markup=InlineKeyboardMarkup(kb)
     )
 
@@ -271,17 +259,12 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id, f"❌ Error:\n{res['error']}")
 
     elif query.data == "mejorar":
-        mejor = llamar_ia(f"Optimiza este workflow:\n{json.dumps(estado.get(uid))}")
-        wf = limpiar_json(mejor)
-
-        if validar(wf):
-            estado[uid] = wf
-            await context.bot.send_message(chat_id, "✅ Mejorado")
-        else:
-            await context.bot.send_message(chat_id, "❌ Falló mejora")
+        wf = generar_workflow(json.dumps(estado.get(uid)))
+        estado[uid] = wf
+        await context.bot.send_message(chat_id, "🧠 Mejorado con IA")
 
     elif query.data == "regen":
-        await procesar(query, context, "regenerar flujo completo")
+        await procesar(query, context, "crear workflow avanzado")
 
 # =============================
 # 📩 MENSAJES
@@ -300,5 +283,5 @@ app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 app.add_handler(CallbackQueryHandler(botones))
 
-print("🔥 ULTRA SaaS ACTIVO")
+print("🔥 CLAW IA DINÁMICA ACTIVA")
 app.run_polling()
