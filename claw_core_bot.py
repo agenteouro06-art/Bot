@@ -22,7 +22,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 ALLOWED_USER   = int(os.getenv("ALLOWED_USER"))
 N8N_URL        = os.getenv("N8N_URL")
 N8N_API_KEY    = os.getenv("N8N_API_KEY")
-OPENROUTER_KEY = os.getenv("OPENAI_KEY")  # reutilizas tu variable
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 estado = {}
 
@@ -40,16 +40,18 @@ def generar_flujo_base():
     }
 
 # =========================
-# 🧠 OPENROUTER (FIX)
+# 🧠 OPENROUTER
 # =========================
 
-def llamar_ia(system, user_msg, max_tokens=2000):
+def llamar_ia(system, user_msg, max_tokens=3000):
     try:
         r = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
             headers={
-                "Authorization": f"Bearer {OPENROUTER_KEY}",
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
                 "Content-Type": "application/json",
+                "HTTP-Referer": "http://localhost",
+                "X-Title": "CLAW CORE",
             },
             json={
                 "model": "anthropic/claude-3-haiku",
@@ -64,15 +66,16 @@ def llamar_ia(system, user_msg, max_tokens=2000):
 
         data = r.json()
 
-        if "choices" not in data:
-            print("ERROR IA:", data)
+        if "error" in data:
+            print("❌ ERROR IA:", data)
             return None
 
         return data["choices"][0]["message"]["content"].strip()
 
     except Exception as e:
-        print("ERROR IA:", e)
+        print("❌ ERROR IA:", e)
         return None
+
 
 def limpiar_json_ia(raw):
     if not raw:
@@ -86,25 +89,29 @@ def limpiar_json_ia(raw):
         return None
 
 # =========================
-# 🧬 MULTI AGENTES
+# 🧬 MULTI-AGENTES
 # =========================
 
 SYS_N8N = """
-Eres experto en n8n. Devuelve SOLO JSON valido.
+Eres experto en n8n.
+
+Devuelve SOLO JSON válido.
 
 Reglas:
 - Debe incluir: name, nodes, connections, settings, pinData
-- JSON limpio, sin markdown
+- Sin markdown
+- Sin texto adicional
 """
 
 def agente_generador(prompt, base=None):
     if base:
         user = f"Modifica este flujo:\n{json.dumps(base)}\n\nObjetivo:\n{prompt}"
     else:
-        user = f"Crea flujo n8n:\n{prompt}"
+        user = f"Crea flujo n8n completo:\n{prompt}"
 
-    raw = llamar_ia(SYS_N8N, user, 3000)
+    raw = llamar_ia(SYS_N8N, user)
     return limpiar_json_ia(raw)
+
 
 def agente_validador(wf):
     if not wf:
@@ -117,7 +124,17 @@ def agente_validador(wf):
 
     return wf
 
+
 def agente_autofix(wf):
+    # limpiar campos prohibidos n8n
+    campos = [
+        "id", "active", "meta", "versionId",
+        "staticData", "createdAt", "updatedAt"
+    ]
+
+    for c in campos:
+        wf.pop(c, None)
+
     wf["settings"] = {}
 
     for n in wf.get("nodes", []):
@@ -129,19 +146,19 @@ def agente_autofix(wf):
     return wf
 
 # =========================
-# 🧠 MODO AUTONOMO TOTAL
+# 🧠 MODO AUTÓNOMO TOTAL
 # =========================
 
 def modo_autonomo(prompt):
-    for intento in range(3):
-        print(f"🚀 Intento {intento+1}")
+    for i in range(3):
+        print(f"🚀 Intento {i+1}")
 
         wf = agente_generador(prompt)
         wf = agente_validador(wf)
         wf = agente_autofix(wf)
 
         if wf.get("nodes"):
-            print("✅ Flujo valido")
+            print("✅ Flujo válido")
             return wf
 
     print("⚠️ fallback base")
@@ -152,13 +169,26 @@ def modo_autonomo(prompt):
 # =========================
 
 def hdrs():
-    return {"X-N8N-API-KEY": N8N_API_KEY, "Content-Type": "application/json"}
+    return {
+        "X-N8N-API-KEY": N8N_API_KEY,
+        "Content-Type": "application/json"
+    }
 
 def crear(workflow):
-    r = requests.post(f"{N8N_URL}/api/v1/workflows", headers=hdrs(), json=workflow)
+    r = requests.post(
+        f"{N8N_URL}/api/v1/workflows",
+        headers=hdrs(),
+        json=workflow,
+        timeout=15
+    )
+
     print("STATUS:", r.status_code)
     print("RESP:", r.text[:300])
-    return r.json()
+
+    try:
+        return r.json()
+    except:
+        return {"error": r.text}
 
 # =========================
 # 🔧 SISTEMA
@@ -182,17 +212,21 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto = update.message.text
     chat  = update.effective_chat.id
 
-    await context.bot.send_message(chat, "🧠 Modo autónomo activado...")
+    await context.bot.send_message(chat, "🧠 Modo autónomo total activado...")
 
     wf = modo_autonomo(texto)
 
     estado["wf"] = wf
 
-    await context.bot.send_message(chat, f"🔥 Flujo listo: {wf.get('name')}")
+    await context.bot.send_message(chat, f"🔥 Flujo listo:\n{wf.get('name')}")
 
     kb = [[InlineKeyboardButton("Crear en n8n", callback_data="crear")]]
 
-    await context.bot.send_message(chat, "¿Enviar a n8n?", reply_markup=InlineKeyboardMarkup(kb))
+    await context.bot.send_message(
+        chat,
+        "¿Quieres enviarlo a n8n?",
+        reply_markup=InlineKeyboardMarkup(kb)
+    )
 
 async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -200,16 +234,28 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if q.data == "crear":
         wf = estado.get("wf")
+
+        if not wf:
+            await q.message.reply_text("❌ No hay flujo en memoria")
+            return
+
         res = crear(wf)
 
-        await q.message.reply_text(f"✅ Creado: {res.get('id')}")
+        if res.get("id"):
+            await q.message.reply_text(f"✅ Flujo creado:\nID: {res['id']}")
+        else:
+            await q.message.reply_text(f"❌ Error:\n{res}")
 
 # =========================
 # 🚀 START
 # =========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🚀 CLAW CORE PRO activo")
+    await update.message.reply_text(
+        "🚀 CLAW CORE PRO ACTIVO\n\n"
+        "Ejemplo:\n"
+        "Crea un flujo de WhatsApp con OCR y validación de pagos"
+    )
 
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
@@ -217,5 +263,5 @@ app.add_handler(CommandHandler("start", start))
 app.add_handler(MessageHandler(filters.TEXT, handle))
 app.add_handler(CallbackQueryHandler(botones))
 
-print("🔥 BOT ACTIVO")
+print("🔥 BOT ACTIVO (GIFHUD READY)")
 app.run_polling()
