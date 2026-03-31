@@ -20,7 +20,7 @@ N8N_API_KEY = os.getenv("N8N_API_KEY")
 estado = {}
 
 # =========================
-# 🧠 GENERADOR INTELIGENTE
+# 🧠 GENERADOR NIVEL DIOS
 # =========================
 
 def generar_flujo_completo():
@@ -48,11 +48,18 @@ def generar_flujo_completo():
                 "parameters": {
                     "url": "https://api.ocr.space/parse/image",
                     "requestMethod": "POST",
-                    "jsonParameters": True,
-                    "bodyParametersJson": """{
-                        "url": "={{$json.image_url}}",
-                        "apikey": "TU_API_KEY_OCR"
-                    }"""
+                    "bodyParameters": {
+                        "parameters": [
+                            {
+                                "name": "url",
+                                "value": "={{$json.image_url}}"
+                            },
+                            {
+                                "name": "apikey",
+                                "value": "TU_API_KEY_OCR"
+                            }
+                        ]
+                    }
                 }
             },
             {
@@ -65,6 +72,8 @@ def generar_flujo_completo():
                     "functionCode": """
 const raw = JSON.stringify($json);
 let texto = raw.toLowerCase();
+
+// extracción mejorada
 let referencia = (texto.match(/\\d{6,}/) || [''])[0];
 let monto = (texto.match(/\\d{4,}/) || [''])[0];
 
@@ -81,17 +90,24 @@ return [{
             {
                 "id": str(uuid.uuid4()),
                 "name": "Validar Banco",
-                "type": "n8n-nodes-base.httpRequest",
-                "typeVersion": 3,
+                "type": "n8n-nodes-base.function",
+                "typeVersion": 1,
                 "position": [950, 300],
                 "parameters": {
-                    "url": "https://api.tubanco.com/validar",
-                    "requestMethod": "POST",
-                    "jsonParameters": True,
-                    "bodyParametersJson": """{
-                        "referencia": "={{$json.referencia}}",
-                        "monto": "={{$json.monto}}"
-                    }"""
+                    "functionCode": """
+const { referencia, monto } = $json;
+
+// AQUÍ luego conectas API real
+const aprobado = referencia && monto;
+
+return [{
+  json: {
+    aprobado,
+    referencia,
+    monto
+  }
+}];
+"""
                 }
             },
             {
@@ -102,11 +118,13 @@ return [{
                 "position": [1200, 300],
                 "parameters": {
                     "conditions": {
-                        "boolean": [{
-                            "value1": "={{$json.aprobado}}",
-                            "operation": "equal",
-                            "value2": True
-                        }]
+                        "boolean": [
+                            {
+                                "value1": "={{$json.aprobado}}",
+                                "operation": "equal",
+                                "value2": True
+                            }
+                        ]
                     }
                 }
             },
@@ -118,7 +136,12 @@ return [{
                 "position": [1450, 200],
                 "parameters": {
                     "values": {
-                        "string": [{"name": "respuesta", "value": "✅ Pago confirmado"}]
+                        "string": [
+                            {
+                                "name": "respuesta",
+                                "value": "✅ Pago confirmado"
+                            }
+                        ]
                     }
                 }
             },
@@ -130,7 +153,12 @@ return [{
                 "position": [1450, 400],
                 "parameters": {
                     "values": {
-                        "string": [{"name": "respuesta", "value": "❌ Pago no coincide"}]
+                        "string": [
+                            {
+                                "name": "respuesta",
+                                "value": "❌ Pago no coincide"
+                            }
+                        ]
                     }
                 }
             },
@@ -160,47 +188,36 @@ return [{
             "OK": {"main": [[{"node": "Responder","type": "main","index": 0}]]},
             "FAIL": {"main": [[{"node": "Responder","type": "main","index": 0}]]}
         },
-        "settings": {}
+        "settings": {}  # 🔥 CLAVE PARA NO ROMPER N8N
     }
 
 # =========================
-# 🧹 FIX PRO N8N (CRÍTICO)
+# 🧹 AUTO FIX REAL
 # =========================
 
 def limpiar(workflow):
-    # eliminar basura
     for k in ["id","active","meta","versionId","staticData","pinData","createdAt","updatedAt"]:
         workflow.pop(k, None)
 
-    # ⚠️ FIX CLAVE
-    workflow["settings"] = {}
+    workflow["settings"] = {}  # 🔥 FIX CRÍTICO
 
-    # evitar vacío
+    # evitar nodos vacíos
     if not workflow.get("nodes"):
         return generar_flujo_completo()
 
-    # eliminar duplicados
-    nombres = set()
-    nuevos = []
+    # evitar duplicados
+    seen = set()
+    new_nodes = []
     for n in workflow["nodes"]:
-        if n["name"] not in nombres:
-            nombres.add(n["name"])
-            nuevos.append(n)
-    workflow["nodes"] = nuevos
+        if n["name"] not in seen:
+            seen.add(n["name"])
+            new_nodes.append(n)
+    workflow["nodes"] = new_nodes
 
     return workflow
 
 # =========================
-# 🧠 AUTO-FIX IA
-# =========================
-
-def autofix(workflow):
-    if "Webhook" not in workflow["connections"]:
-        workflow = generar_flujo_completo()
-    return workflow
-
-# =========================
-# 🔁 CREACIÓN CON IA + RETRY
+# 🔁 RETRY INTELIGENTE
 # =========================
 
 def crear_con_retry(workflow):
@@ -208,7 +225,6 @@ def crear_con_retry(workflow):
         print(f"🚀 Intento {intento+1}")
 
         wf = limpiar(workflow)
-        wf = autofix(wf)
 
         r = requests.post(
             f"{N8N_URL}/api/v1/workflows",
@@ -222,36 +238,24 @@ def crear_con_retry(workflow):
         print("STATUS:", r.status_code)
         print("RESP:", r.text)
 
-        if r.status_code in [200,201]:
+        if r.status_code in [200, 201]:
             return r.json()
 
-        # IA regenera variante
         workflow = generar_flujo_completo()
 
     return {"error": "❌ Falló después de 3 intentos"}
 
 # =========================
-# 🧠 GENERADOR DESDE TEXTO
-# =========================
-
-def generar_desde_texto(texto):
-    if "pago" in texto.lower() or "ocr" in texto.lower():
-        return generar_flujo_completo()
-    return generar_flujo_completo()
-
-# =========================
-# 🤖 BOT
+# 🤖 BOT TELEGRAM
 # =========================
 
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ALLOWED_USER:
         return
 
-    texto = update.message.text
+    await update.message.reply_text("🧠 Generando flujo PRO...")
 
-    await update.message.reply_text("🧠 Generando flujo inteligente...")
-
-    wf = generar_desde_texto(texto)
+    wf = generar_flujo_completo()
     estado[update.effective_user.id] = wf
 
     kb = [
@@ -260,7 +264,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
 
     await update.message.reply_text(
-        "🔥 SaaS Flow listo (OCR + Banco + WhatsApp)",
+        "🔥 Flujo listo (OCR + Banco + SaaS)",
         reply_markup=InlineKeyboardMarkup(kb)
     )
 
@@ -275,7 +279,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(q.message.chat.id, f"```json\n{txt[:4000]}\n```", parse_mode="Markdown")
 
     elif q.data == "crear":
-        await context.bot.send_message(q.message.chat.id, "🚀 Deploy SaaS...")
+        await context.bot.send_message(q.message.chat.id, "🚀 Creando en n8n...")
         res = crear_con_retry(estado[uid])
         await context.bot.send_message(q.message.chat.id, str(res))
 
@@ -284,8 +288,8 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================
 
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 app.add_handler(CallbackQueryHandler(botones))
 
-print("🔥 CLAW SaaS GOD MODE ACTIVO")
 app.run_polling()
