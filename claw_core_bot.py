@@ -1,4 +1,4 @@
-import os, json, requests
+import os, json, requests, traceback
 from dotenv import load_dotenv
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -8,7 +8,7 @@ from telegram.ext import (
 )
 
 # =========================
-# 🔐 ENV
+# 🔐 CARGAR ENV
 # =========================
 load_dotenv("/home/mau/claw_core/.env")
 
@@ -16,91 +16,121 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 ALLOWED_USER   = int(os.getenv("ALLOWED_USER", "0"))
 OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY")
 
+print("TOKEN:", TELEGRAM_TOKEN)
+print("USER:", ALLOWED_USER)
+print("OPENROUTER:", "OK" if OPENROUTER_KEY else "MISSING")
+
 # =========================
 # 🤖 OPENROUTER
 # =========================
 def or_chat(system, user, max_tokens=2000):
-    url = "https://openrouter.ai/api/v1/chat/completions"
-
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_KEY}",
-        "Content-Type": "application/json"
-    }
-
-    data = {
-        "model": "anthropic/claude-3-haiku",
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user}
-        ],
-        "max_tokens": max_tokens
-    }
-
-    r = requests.post(url, headers=headers, json=data)
-
     try:
+        url = "https://openrouter.ai/api/v1/chat/completions"
+
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_KEY}",
+            "Content-Type": "application/json"
+        }
+
+        data = {
+            "model": "anthropic/claude-3-haiku",
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user}
+            ],
+            "max_tokens": max_tokens
+        }
+
+        r = requests.post(url, headers=headers, json=data, timeout=30)
+
+        print("🧠 RAW IA:", r.text[:500])
+
         return r.json()["choices"][0]["message"]["content"]
-    except:
-        print("ERROR OPENROUTER:", r.text)
+
+    except Exception as e:
+        print("❌ ERROR IA:", e)
         return '{"error":"fail"}'
+
 
 # =========================
 # 🧹 LIMPIAR JSON
 # =========================
 def limpiar_json(raw):
-    if "```" in raw:
-        raw = raw.split("```")[1]
+    try:
+        if "```" in raw:
+            raw = raw.split("```")[1]
 
-    raw = raw.replace("json", "").strip()
+        raw = raw.replace("json", "").strip()
 
-    inicio = raw.find("{")
-    fin = raw.rfind("}") + 1
+        inicio = raw.find("{")
+        fin = raw.rfind("}") + 1
 
-    return raw[inicio:fin]
+        return raw[inicio:fin]
+    except:
+        return raw
+
 
 # =========================
-# 🧬 PLANTILLAS
+# 🧬 PLANTILLA BASE
 # =========================
-PLANTILLAS = {
-    "pedido": {
-        "name": "Pedidos WhatsApp",
+def flujo_base():
+    return {
+        "name": "Flujo Base",
         "nodes": [
-            {"id":"1","name":"Webhook","type":"n8n-nodes-base.webhook","typeVersion":2,"position":[200,300],"parameters":{"path":"pedido","httpMethod":"POST"}},
-            {"id":"2","name":"Set Pedido","type":"n8n-nodes-base.set","typeVersion":2,"position":[450,300],"parameters":{"values":{"string":[{"name":"pedido","value":"={{$json.body}}"}]}}},
-            {"id":"3","name":"Google Sheets","type":"n8n-nodes-base.googleSheets","typeVersion":4,"position":[700,300],"parameters":{"operation":"append"}}
+            {
+                "id": "1",
+                "name": "Webhook",
+                "type": "n8n-nodes-base.webhook",
+                "typeVersion": 2,
+                "position": [200, 300],
+                "parameters": {
+                    "path": "webhook",
+                    "httpMethod": "POST"
+                }
+            },
+            {
+                "id": "2",
+                "name": "Respuesta",
+                "type": "n8n-nodes-base.set",
+                "typeVersion": 2,
+                "position": [450, 300],
+                "parameters": {
+                    "values": {
+                        "string": [
+                            {"name": "msg", "value": "ok"}
+                        ]
+                    }
+                }
+            }
         ],
-        "connections":{
-            "Webhook":{"main":[[{"node":"Set Pedido","type":"main","index":0}]]},
-            "Set Pedido":{"main":[[{"node":"Google Sheets","type":"main","index":0}]]}
+        "connections": {
+            "Webhook": {
+                "main": [[{"node": "Respuesta", "type": "main", "index": 0}]]
+            }
         },
-        "settings":{},
-        "pinData":{}
+        "settings": {},
+        "pinData": {}
     }
-}
 
-def elegir_base(desc):
-    d = desc.lower()
-    if "pedido" in d or "restaurante" in d:
-        return PLANTILLAS["pedido"]
-    return list(PLANTILLAS.values())[0]
 
 # =========================
-# 🤖 GENERADOR
+# 🤖 GENERAR FLUJO
 # =========================
 def generar_flujo(desc):
-    base = elegir_base(desc)
+    print("🧠 Generando flujo...")
+
+    base = flujo_base()
 
     system = """
 Eres experto en n8n.
-
-MODIFICA el workflow base según el requerimiento.
+Modifica el workflow base según el requerimiento.
 
 Devuelve SOLO JSON válido.
 """
 
     prompt = f"""
 BASE:
-{json.dumps(base, indent=2)}
+{json.dumps(base)}
 
 REQUERIMIENTO:
 {desc}
@@ -111,12 +141,19 @@ REQUERIMIENTO:
     try:
         limpio = limpiar_json(raw)
         data = json.loads(limpio)
+
+        print("✅ JSON OK")
         return data
-    except:
+
+    except Exception as e:
+        print("❌ JSON ERROR:", e)
+        print("RAW:", raw)
+
         return base
 
+
 # =========================
-# 💬 TELEGRAM
+# 📦 ESTADO
 # =========================
 estado = {}
 
@@ -125,53 +162,90 @@ def get_st(uid):
         estado[uid] = {"flujo": None}
     return estado[uid]
 
+
+# =========================
+# 💬 MENSAJES
+# =========================
 async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    if uid != ALLOWED_USER:
+    try:
+        uid = update.effective_user.id
+        print("📩 Mensaje de:", uid)
+
+        if uid != ALLOWED_USER:
+            print("❌ Usuario no autorizado")
+            return
+
+        texto = update.message.text
+        chat  = update.effective_chat.id
+
+        await ctx.bot.send_message(chat, "🧠 Procesando...")
+
+        flujo = generar_flujo(texto)
+
+        st = get_st(uid)
+        st["flujo"] = flujo
+
+        kb = [[InlineKeyboardButton("📄 Ver JSON", callback_data="json")]]
+
+        await ctx.bot.send_message(
+            chat,
+            f"✅ Flujo generado:\n{flujo.get('name','sin nombre')}",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
+
+    except Exception as e:
+        print("❌ ERROR HANDLE:", e)
+        traceback.print_exc()
+
+
+# =========================
+# 🔘 BOTONES
+# =========================
+async def botones(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    try:
+        q = update.callback_query
+        await q.answer()
+
+        uid = q.from_user.id
+        st = get_st(uid)
+
+        if q.data == "json":
+            txt = json.dumps(st["flujo"], indent=2)
+
+            for i in range(0, len(txt), 3500):
+                await q.message.reply_text(
+                    f"```json\n{txt[i:i+3500]}\n```",
+                    parse_mode="Markdown"
+                )
+
+    except Exception as e:
+        print("❌ ERROR BOTONES:", e)
+
+
+# =========================
+# 🚀 START
+# =========================
+async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🔥 BOT ACTIVO - ENV OK")
+
+
+# =========================
+# 🧠 MAIN
+# =========================
+def main():
+    if not TELEGRAM_TOKEN:
+        print("❌ TELEGRAM_TOKEN no cargado")
         return
 
-    texto = update.message.text
-    st = get_st(uid)
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
-    await update.message.reply_text("🧠 Creando flujo real...")
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+    app.add_handler(CallbackQueryHandler(botones))
 
-    flujo = generar_flujo(texto)
+    print("🚀 BOT CORRIENDO...")
+    app.run_polling()
 
-    st["flujo"] = flujo
 
-    kb = [
-        [InlineKeyboardButton("📄 Ver JSON", callback_data="json")]
-    ]
-
-    await update.message.reply_text(
-        f"✅ Flujo generado: {flujo.get('name','sin nombre')}",
-        reply_markup=InlineKeyboardMarkup(kb)
-    )
-
-async def botones(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-
-    uid = q.from_user.id
-    st = get_st(uid)
-
-    if q.data == "json":
-        txt = json.dumps(st["flujo"], indent=2)
-
-        for i in range(0, len(txt), 3500):
-            await q.message.reply_text(f"```json\n{txt[i:i+3500]}\n```", parse_mode="Markdown")
-
-async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔥 CLAW DIOS ACTIVO")
-
-# =========================
-# 🚀 RUN
-# =========================
-app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-
-app.add_handler(CommandHandler("start", start))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-app.add_handler(CallbackQueryHandler(botones))
-
-print("🔥 BOT ACTIVO")
-app.run_polling()
+if __name__ == "__main__":
+    main()
