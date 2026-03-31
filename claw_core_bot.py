@@ -3,7 +3,6 @@ import json
 import asyncio
 import requests
 from dotenv import load_dotenv
-from openai import OpenAI
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, CallbackQueryHandler, filters
@@ -22,53 +21,52 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 estado = {}
 
 # =========================
-# 🤖 IA (OPENROUTER)
+# 🤖 OPENROUTER SIN SDK
 # =========================
-client = OpenAI(
-    api_key=OPENROUTER_API_KEY,
-    base_url="https://openrouter.ai/api/v1"
-)
-
-MODELO = "anthropic/claude-3-haiku"
-
 def ia_generar_flujo(prompt):
 
     system = """
 Eres experto en n8n.
 
-Devuelve SOLO JSON válido de un workflow IMPORTABLE en n8n.
+Devuelve SOLO JSON válido.
 
 REGLAS:
 - SOLO JSON
-- Campos root: name, nodes, connections, settings
-- NO id, NO versionId, NO meta
-- Cada nodo:
-  name, type, typeVersion, position, parameters
-- position = [x,y]
-- Conexiones válidas
-- Usa nodos reales de n8n
+- root: name, nodes, connections, settings
+- SIN id, SIN versionId
+- nodes: name, type, typeVersion, position, parameters
+- position: [x,y]
+- conexiones válidas
 
-IMPORTANTE:
-Incluye nodos necesarios para:
-- Webhook o Trigger
-- OCR (si hay imágenes)
-- Comparación lógica
-- Respuesta (HTTP o acción)
+Usa nodos como:
+- webhook
+- httpRequest
+- function
+- set
+- if
+- respondToWebhook
 
 """
 
-    r = client.chat.completions.create(
-        model=MODELO,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt}
-        ],
-        max_tokens=3000
+    r = requests.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json"
+        },
+        json={
+            "model": "anthropic/claude-3-haiku",
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt}
+            ]
+        }
     )
 
-    texto = r.choices[0].message.content.strip()
+    data = r.json()
 
-    # limpiar markdown si viene
+    texto = data["choices"][0]["message"]["content"]
+
     if "```" in texto:
         texto = texto.split("```")[1]
         texto = texto.replace("json", "").strip()
@@ -76,7 +74,7 @@ Incluye nodos necesarios para:
     return json.loads(texto)
 
 # =========================
-# 🧹 LIMPIADOR CRÍTICO
+# 🧹 LIMPIADOR PRO
 # =========================
 def limpiar_workflow(wf):
 
@@ -88,16 +86,15 @@ def limpiar_workflow(wf):
     }
 
     for i, n in enumerate(wf.get("nodes", [])):
-        nodo = {
+        limpio["nodes"].append({
             "name": n["name"],
             "type": n["type"],
             "typeVersion": n.get("typeVersion", 1),
             "position": [200 + i*250, 300],
             "parameters": n.get("parameters", {})
-        }
-        limpio["nodes"].append(nodo)
+        })
 
-    # reconstruir conexiones seguras
+    # reconstruir conexiones
     nodes = limpio["nodes"]
     for i in range(len(nodes)-1):
         limpio["connections"][nodes[i]["name"]] = {
@@ -111,11 +108,13 @@ def limpiar_workflow(wf):
     return limpio
 
 # =========================
-# 🚀 CREAR EN N8N (RETRY REAL)
+# 🔁 CREACIÓN CON AUTO-FIX
 # =========================
 def crear_n8n(wf):
 
     for intento in range(3):
+
+        print(f"🚀 Intento {intento+1}")
 
         payload = limpiar_workflow(wf)
 
@@ -134,47 +133,53 @@ def crear_n8n(wf):
         if r.status_code in [200, 201]:
             return r.json()
 
-    return {"error": "❌ No se pudo crear"}
+        # 🔥 auto-fix si settings falta
+        if "settings" in r.text:
+            payload["settings"] = {}
+
+    return {"error": "❌ Falló después de 3 intentos"}
 
 # =========================
-# 🧠 ANALISIS DE CREDENCIALES
+# 🧠 DETECTOR DE REQUISITOS
 # =========================
 def detectar_requisitos(texto):
 
     req = []
 
-    if "whatsapp" in texto.lower():
-        req.append("WhatsApp API (Twilio o Meta)")
+    t = texto.lower()
 
-    if "correo" in texto.lower() or "gmail" in texto.lower():
-        req.append("Credenciales Gmail / IMAP")
+    if "whatsapp" in t:
+        req.append("API WhatsApp (Twilio o Meta)")
 
-    if "imagen" in texto.lower() or "captura" in texto.lower():
-        req.append("Servicio OCR (Google Vision / AWS Textract)")
+    if "correo" in t or "gmail" in t:
+        req.append("Credenciales IMAP o Gmail")
 
-    if "banco" in texto.lower():
-        req.append("Acceso a correo bancario o API bancaria")
+    if "captura" in t or "imagen" in t:
+        req.append("OCR (Google Vision / AWS Textract)")
+
+    if "banco" in t:
+        req.append("Acceso a correos del banco")
 
     return req
 
 # =========================
-# 🤖 MOTOR PRINCIPAL
+# 🤖 MOTOR
 # =========================
 async def procesar(update, context, texto):
 
     uid = update.effective_user.id
 
     pasos = [
-        "🧠 Analizando requerimiento...",
-        "🔍 Diseñando flujo...",
-        "⚙ Generando nodos reales...",
-        "🧹 Validando JSON...",
-        "🚀 Preparando despliegue..."
+        "🧠 Analizando...",
+        "🏗 Diseñando...",
+        "⚙ Generando...",
+        "🧹 Corrigiendo...",
+        "🚀 Listo..."
     ]
 
     for p in pasos:
         await update.message.reply_text(p)
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.2)
 
     try:
         wf = ia_generar_flujo(texto)
@@ -184,19 +189,19 @@ async def procesar(update, context, texto):
 
     estado[uid] = wf
 
-    requisitos = detectar_requisitos(texto)
+    reqs = detectar_requisitos(texto)
 
-    req_txt = "\n".join([f"• {r}" for r in requisitos]) if requisitos else "• Ninguno"
+    req_txt = "\n".join([f"• {r}" for r in reqs]) if reqs else "• Ninguno"
 
     kb = [
         [
-            InlineKeyboardButton("🚀 Crear en n8n", callback_data="crear"),
-            InlineKeyboardButton("📄 Ver JSON", callback_data="ver")
+            InlineKeyboardButton("🚀 Crear", callback_data="crear"),
+            InlineKeyboardButton("📄 JSON", callback_data="ver")
         ]
     ]
 
     await update.message.reply_text(
-        f"✅ Flujo generado\n\n🔧 Configuración necesaria:\n{req_txt}",
+        f"✅ Flujo listo\n\n🔧 Configurar:\n{req_txt}",
         reply_markup=InlineKeyboardMarkup(kb)
     )
 
@@ -216,7 +221,7 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat, f"```json\n{txt[:4000]}\n```", parse_mode="Markdown")
 
     elif query.data == "crear":
-        await context.bot.send_message(chat, "🚀 Creando en n8n...")
+        await context.bot.send_message(chat, "🚀 Enviando a n8n...")
         res = crear_n8n(estado[uid])
         await context.bot.send_message(chat, str(res))
 
@@ -237,5 +242,5 @@ app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 app.add_handler(CallbackQueryHandler(botones))
 
-print("💀 CLAW IA + SaaS + n8n ACTIVO")
+print("🔥 CLAW SERVER ESTABLE ACTIVO")
 app.run_polling()
