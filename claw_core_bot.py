@@ -1,181 +1,180 @@
 import os
 import json
 import requests
+from dotenv import load_dotenv
 from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
 # =========================
-# CONFIG
+# 🔐 CARGAR VARIABLES .ENV
 # =========================
+load_dotenv(dotenv_path="/home/mau/claw_core/.env")
 
-TELEGRAM_TOKEN = "TU_TOKEN_AQUI"
-N8N_URL = "http://localhost:5678/api/v1/workflows"
-N8N_API_KEY = "TU_API_KEY_N8N"
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+N8N_API_KEY = os.getenv("N8N_API_KEY")
+N8N_URL = os.getenv("N8N_URL")
 
 # =========================
-# NORMALIZADOR n8n (CLAVE)
+# 🚨 VALIDACIÓN INICIAL
 # =========================
+if not TELEGRAM_TOKEN:
+    print("❌ ERROR: TELEGRAM_TOKEN no cargado")
+    exit()
 
-def normalizar(wf):
-    try:
-        wf = json.loads(wf)
-    except:
-        return None
+print("✅ BOT FUNCIONAL INICIADO")
 
-    limpio = {
-        "name": wf.get("name", "Workflow IA"),
-        "nodes": [],
-        "connections": wf.get("connections", {})
+# =========================
+# 🤖 COMANDO START
+# =========================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🚀 CLAW activo. Envíame lo que quieres automatizar.")
+
+# =========================
+# 🧠 GENERADOR DE FLUJOS
+# =========================
+def generar_flujo_base(texto_usuario):
+
+    flujo = {
+        "name": "Flujo AutoGenerado",
+        "nodes": [
+            {
+                "id": "1",
+                "name": "Inicio",
+                "type": "n8n-nodes-base.start",
+                "typeVersion": 1,
+                "position": [100, 300],
+                "parameters": {}
+            },
+            {
+                "id": "2",
+                "name": "Webhook",
+                "type": "n8n-nodes-base.webhook",
+                "typeVersion": 1,
+                "position": [300, 300],
+                "parameters": {
+                    "path": "webhook-auto",
+                    "httpMethod": "POST"
+                }
+            },
+            {
+                "id": "3",
+                "name": "Set Data",
+                "type": "n8n-nodes-base.set",
+                "typeVersion": 2,
+                "position": [500, 300],
+                "parameters": {
+                    "values": {
+                        "string": [
+                            {
+                                "name": "mensaje",
+                                "value": texto_usuario
+                            }
+                        ]
+                    }
+                }
+            },
+            {
+                "id": "4",
+                "name": "Respuesta",
+                "type": "n8n-nodes-base.respondToWebhook",
+                "typeVersion": 1,
+                "position": [700, 300],
+                "parameters": {
+                    "responseBody": "OK"
+                }
+            }
+        ],
+        "connections": {
+            "Inicio": {
+                "main": [
+                    [
+                        {
+                            "node": "Webhook",
+                            "type": "main",
+                            "index": 0
+                        }
+                    ]
+                ]
+            },
+            "Webhook": {
+                "main": [
+                    [
+                        {
+                            "node": "Set Data",
+                            "type": "main",
+                            "index": 0
+                        }
+                    ]
+                ]
+            },
+            "Set Data": {
+                "main": [
+                    [
+                        {
+                            "node": "Respuesta",
+                            "type": "main",
+                            "index": 0
+                        }
+                    ]
+                ]
+            }
+        },
+        "settings": {}
     }
 
-    for i, n in enumerate(wf.get("nodes", [])):
-
-        # 🔥 FIX POSITION
-        pos = n.get("position", [200 + i*300, 300])
-        if not isinstance(pos, list) or len(pos) != 2:
-            pos = [200 + i*300, 300]
-
-        limpio["nodes"].append({
-            "id": str(i + 1),
-            "name": n.get("name", f"Node {i+1}"),
-            "type": n.get("type", "n8n-nodes-base.set"),
-            "typeVersion": n.get("typeVersion", 1),
-            "position": pos,
-            "parameters": n.get("parameters", {})
-        })
-
-    return limpio
+    return flujo
 
 # =========================
-# ENVÍO A n8n
+# 🚀 ENVIAR A N8N
 # =========================
+def enviar_a_n8n(flujo):
 
-def enviar_a_n8n(workflow):
     headers = {
         "X-N8N-API-KEY": N8N_API_KEY,
         "Content-Type": "application/json"
     }
 
-    response = requests.post(N8N_URL, headers=headers, json=workflow)
-
     try:
+        response = requests.post(N8N_URL, headers=headers, json=flujo)
+
+        print("📡 RESPUESTA N8N:", response.text)
+
         return response.json()
-    except:
-        return {"error": response.text}
+
+    except Exception as e:
+        print("❌ ERROR N8N:", str(e))
+        return {"error": str(e)}
 
 # =========================
-# GENERADOR DE FLUJOS (SIN IA)
+# 📩 MENSAJES
 # =========================
-
-def generar_flujo_basico():
-    return {
-        "name": "Verificación Transferencias",
-        "nodes": [
-            {
-                "name": "Webhook",
-                "type": "n8n-nodes-base.webhook",
-                "position": [200, 300],
-                "parameters": {
-                    "path": "verificacion",
-                    "httpMethod": "POST"
-                }
-            },
-            {
-                "name": "Leer Email",
-                "type": "n8n-nodes-base.emailReadImap",
-                "position": [500, 300],
-                "parameters": {
-                    "mailbox": "INBOX"
-                }
-            },
-            {
-                "name": "Comparar",
-                "type": "n8n-nodes-base.if",
-                "position": [800, 300],
-                "parameters": {
-                    "conditions": {
-                        "string": [
-                            {
-                                "value1": "={{$json[\"referencia\"]}}",
-                                "operation": "contains",
-                                "value2": "={{$json[\"correo\"]}}"
-                            }
-                        ]
-                    }
-                }
-            },
-            {
-                "name": "Respuesta OK",
-                "type": "n8n-nodes-base.set",
-                "position": [1100, 200],
-                "parameters": {
-                    "values": {
-                        "string": [
-                            {
-                                "name": "estado",
-                                "value": "verificado"
-                            }
-                        ]
-                    }
-                }
-            }
-        ],
-        "connections": {
-            "Webhook": {
-                "main": [[{"node": "Leer Email", "type": "main", "index": 0}]]
-            },
-            "Leer Email": {
-                "main": [[{"node": "Comparar", "type": "main", "index": 0}]]
-            },
-            "Comparar": {
-                "main": [
-                    [{"node": "Respuesta OK", "type": "main", "index": 0}],
-                    []
-                ]
-            }
-        }
-    }
-
-# =========================
-# HANDLER TELEGRAM
-# =========================
-
-async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto = update.message.text
 
-    print("[MSG]", texto)
+    print(f"[MSG] {texto}")
 
     await update.message.reply_text("🧠 Procesando...")
 
-    # 🔥 GENERAR FLUJO (puedes mejorar lógica aquí)
-    flujo = generar_flujo_basico()
+    flujo = generar_flujo_base(texto)
 
-    # 🔥 NORMALIZAR (CLAVE)
-    flujo_limpio = normalizar(json.dumps(flujo))
+    resultado = enviar_a_n8n(flujo)
 
-    if not flujo_limpio:
-        await update.message.reply_text("❌ Error generando flujo")
-        return
-
-    # 🔥 ENVIAR A n8n
-    res = enviar_a_n8n(flujo_limpio)
-
-    print("✅ Enviado a n8n:", res)
-
-    await update.message.reply_text(f"✅ Flujo enviado:\n{res}")
+    await update.message.reply_text(f"✅ Enviado a n8n:\n{resultado}")
 
 # =========================
-# MAIN
+# 🚀 MAIN
 # =========================
-
 def main():
-    print("🚀 BOT FUNCIONAL INICIADO")
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, manejar_mensaje))
 
     app.run_polling()
 
+# =========================
+# ▶️ EJECUCIÓN
+# =========================
 if __name__ == "__main__":
     main()
