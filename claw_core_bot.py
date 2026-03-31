@@ -3,7 +3,6 @@ import json
 import random
 import uuid
 import requests
-import subprocess
 from dotenv import load_dotenv
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -24,7 +23,6 @@ N8N_URL        = os.getenv("N8N_URL")
 N8N_API_KEY    = os.getenv("N8N_API_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-# 🔥 VALIDACIÓN CLAVE
 if not OPENROUTER_API_KEY:
     print("❌ ERROR: OPENROUTER_API_KEY no cargada")
     exit()
@@ -39,11 +37,10 @@ estado = {}
 
 def generar_flujo_base():
     return {
-        "name": f"WhatsApp OCR Pago PRO {random.randint(100,999)}",
+        "name": f"Workflow Base {random.randint(100,999)}",
         "nodes": [],
         "connections": {},
-        "settings": {},
-        "pinData": {}
+        "settings": {}
     }
 
 # =========================
@@ -101,21 +98,12 @@ def limpiar_json_ia(raw):
 
 SYS_N8N = """
 Eres experto en n8n.
-
-Devuelve SOLO JSON válido.
-Sin texto adicional.
-
-Debe incluir:
-name, nodes, connections, settings, pinData
+Devuelve SOLO JSON válido sin texto adicional.
+Debe incluir: name, nodes, connections, settings
 """
 
-def agente_generador(prompt, base=None):
-    if base:
-        user = f"Modifica este flujo:\n{json.dumps(base)}\n\nObjetivo:\n{prompt}"
-    else:
-        user = f"Crea flujo n8n completo:\n{prompt}"
-
-    raw = llamar_ia(SYS_N8N, user)
+def agente_generador(prompt):
+    raw = llamar_ia(SYS_N8N, f"Crea flujo n8n completo:\n{prompt}")
     return limpiar_json_ia(raw)
 
 
@@ -126,42 +114,49 @@ def agente_validador(wf):
     wf.setdefault("nodes", [])
     wf.setdefault("connections", {})
     wf.setdefault("settings", {})
-    wf.setdefault("pinData", {})
 
     return wf
 
 
+# 🔥 FIX DEFINITIVO N8N
 def agente_autofix(wf):
-    # limpiar root
-    campos = [
-        "id", "active", "meta", "versionId",
-        "staticData", "createdAt", "updatedAt"
-    ]
 
-    for c in campos:
-        wf.pop(c, None)
+    wf_limpio = {
+        "name": wf.get("name", f"Workflow {random.randint(100,999)}"),
+        "nodes": [],
+        "connections": {},
+        "settings": {}
+    }
 
-    wf["settings"] = {}
-    wf["pinData"] = {}
-
+    # LIMPIAR NODOS
     for n in wf.get("nodes", []):
+        nodo = {
+            "id": str(uuid.uuid4()),
+            "name": n.get("name", "Nodo"),
+            "type": n.get("type", "n8n-nodes-base.set"),
+            "typeVersion": n.get("typeVersion", 1),
+            "position": n.get("position", [300, 300]),
+            "parameters": n.get("parameters", {})
+        }
 
-        # ID nuevo SIEMPRE
-        n["id"] = str(uuid.uuid4())
+        # SOLO credentials si es válido
+        if isinstance(n.get("credentials"), dict):
+            nodo["credentials"] = n["credentials"]
 
-        n.setdefault("parameters", {})
-        n.setdefault("typeVersion", 1)
-        n.setdefault("position", [300, 300])
+        wf_limpio["nodes"].append(nodo)
 
-        # 🔥 FIX DEFINITIVO CREDENTIALS
-        if "credentials" in n:
-            if not isinstance(n["credentials"], dict):
-                del n["credentials"]
+    # LIMPIAR CONEXIONES
+    conexiones = wf.get("connections", {})
 
-    return wf
+    for k, v in conexiones.items():
+        if isinstance(v, dict) and "main" in v:
+            wf_limpio["connections"][k] = v
+
+    return wf_limpio
+
 
 # =========================
-# 🧠 MODO AUTÓNOMO TOTAL
+# 🧠 MODO AUTÓNOMO
 # =========================
 
 def modo_autonomo(prompt):
@@ -171,7 +166,6 @@ def modo_autonomo(prompt):
         wf = agente_generador(prompt)
 
         if not wf:
-            print("⚠️ IA devolvió vacío")
             continue
 
         wf = agente_validador(wf)
@@ -188,18 +182,13 @@ def modo_autonomo(prompt):
 # 🔁 N8N API
 # =========================
 
-def hdrs():
-    return {
-        "X-N8N-API-KEY": N8N_API_KEY,
-        "Content-Type": "application/json"
-    }
-
 def crear(workflow):
-    workflow = agente_autofix(workflow)
-
     r = requests.post(
         f"{N8N_URL}/api/v1/workflows",
-        headers=hdrs(),
+        headers={
+            "X-N8N-API-KEY": N8N_API_KEY,
+            "Content-Type": "application/json"
+        },
         json=workflow,
         timeout=15
     )
@@ -265,7 +254,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🚀 CLAW CORE PRO ACTIVO\n\n"
         "Ejemplo:\n"
-        "Crea un flujo de verificación de pagos con WhatsApp y correo banco"
+        "Crea un flujo que valide pagos de WhatsApp con correo del banco"
     )
 
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
