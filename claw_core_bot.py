@@ -20,10 +20,32 @@ N8N_API_KEY = os.getenv("N8N_API_KEY")
 estado = {}
 
 # =========================
-# 🧠 GENERADOR NIVEL DIOS
+# 🧠 GENERADOR INTELIGENTE
 # =========================
 
-def generar_flujo_completo():
+def generar_flujo_desde_texto(texto_usuario):
+
+    texto = texto_usuario.lower()
+
+    # base OCR pago (default)
+    flujo = generar_flujo_base()
+
+    # detección inteligente
+    if "restaurante" in texto:
+        flujo["name"] = "Bot Restaurante PRO"
+    elif "tienda" in texto:
+        flujo["name"] = "Bot Ecommerce PRO"
+    elif "pagos" in texto:
+        flujo["name"] = "Validador Pagos PRO"
+
+    return flujo
+
+# =========================
+# 🧬 BASE REAL FUNCIONAL
+# =========================
+
+def generar_flujo_base():
+
     return {
         "name": f"WhatsApp OCR Pago PRO {random.randint(100,999)}",
         "nodes": [
@@ -50,14 +72,8 @@ def generar_flujo_completo():
                     "requestMethod": "POST",
                     "bodyParameters": {
                         "parameters": [
-                            {
-                                "name": "url",
-                                "value": "={{$json.image_url}}"
-                            },
-                            {
-                                "name": "apikey",
-                                "value": "TU_API_KEY_OCR"
-                            }
+                            {"name": "url", "value": "={{$json.image_url}}"},
+                            {"name": "apikey", "value": "TU_API_KEY_OCR"}
                         ]
                     }
                 }
@@ -73,17 +89,11 @@ def generar_flujo_completo():
 const raw = JSON.stringify($json);
 let texto = raw.toLowerCase();
 
-// extracción mejorada
+// heurística inteligente
 let referencia = (texto.match(/\\d{6,}/) || [''])[0];
 let monto = (texto.match(/\\d{4,}/) || [''])[0];
 
-return [{
-  json: {
-    texto,
-    referencia,
-    monto
-  }
-}];
+return [{ json: { texto, referencia, monto } }];
 """
                 }
             },
@@ -97,16 +107,10 @@ return [{
                     "functionCode": """
 const { referencia, monto } = $json;
 
-// AQUÍ luego conectas API real
+// listo para API real
 const aprobado = referencia && monto;
 
-return [{
-  json: {
-    aprobado,
-    referencia,
-    monto
-  }
-}];
+return [{ json: { aprobado, referencia, monto } }];
 """
                 }
             },
@@ -118,13 +122,11 @@ return [{
                 "position": [1200, 300],
                 "parameters": {
                     "conditions": {
-                        "boolean": [
-                            {
-                                "value1": "={{$json.aprobado}}",
-                                "operation": "equal",
-                                "value2": True
-                            }
-                        ]
+                        "boolean": [{
+                            "value1": "={{$json.aprobado}}",
+                            "operation": "equal",
+                            "value2": True
+                        }]
                     }
                 }
             },
@@ -136,12 +138,7 @@ return [{
                 "position": [1450, 200],
                 "parameters": {
                     "values": {
-                        "string": [
-                            {
-                                "name": "respuesta",
-                                "value": "✅ Pago confirmado"
-                            }
-                        ]
+                        "string": [{"name": "respuesta", "value": "✅ Pago confirmado"}]
                     }
                 }
             },
@@ -153,12 +150,7 @@ return [{
                 "position": [1450, 400],
                 "parameters": {
                     "values": {
-                        "string": [
-                            {
-                                "name": "respuesta",
-                                "value": "❌ Pago no coincide"
-                            }
-                        ]
+                        "string": [{"name": "respuesta", "value": "❌ Pago no coincide"}]
                     }
                 }
             },
@@ -188,40 +180,36 @@ return [{
             "OK": {"main": [[{"node": "Responder","type": "main","index": 0}]]},
             "FAIL": {"main": [[{"node": "Responder","type": "main","index": 0}]]}
         },
-        "settings": {}  # 🔥 CLAVE PARA NO ROMPER N8N
+        "settings": {}
     }
 
 # =========================
-# 🧹 AUTO FIX REAL
+# 🧹 AUTO FIX REAL (CLAVE)
 # =========================
 
 def limpiar(workflow):
+
+    # ❌ QUITA LO QUE ROMPE N8N
     for k in ["id","active","meta","versionId","staticData","pinData","createdAt","updatedAt"]:
         workflow.pop(k, None)
 
-    workflow["settings"] = {}  # 🔥 FIX CRÍTICO
+    # ❗ settings vacío (IMPORTANTE para evitar 400)
+    workflow["settings"] = {}
 
     # evitar nodos vacíos
     if not workflow.get("nodes"):
-        return generar_flujo_completo()
-
-    # evitar duplicados
-    seen = set()
-    new_nodes = []
-    for n in workflow["nodes"]:
-        if n["name"] not in seen:
-            seen.add(n["name"])
-            new_nodes.append(n)
-    workflow["nodes"] = new_nodes
+        return generar_flujo_base()
 
     return workflow
 
 # =========================
-# 🔁 RETRY INTELIGENTE
+# 🔁 CREAR CON RETRY + AUTOFIX
 # =========================
 
 def crear_con_retry(workflow):
+
     for intento in range(3):
+
         print(f"🚀 Intento {intento+1}")
 
         wf = limpiar(workflow)
@@ -238,10 +226,11 @@ def crear_con_retry(workflow):
         print("STATUS:", r.status_code)
         print("RESP:", r.text)
 
-        if r.status_code in [200, 201]:
+        if r.status_code in [200,201]:
             return r.json()
 
-        workflow = generar_flujo_completo()
+        # 🔥 AUTOFIX: regenerar limpio
+        workflow = generar_flujo_base()
 
     return {"error": "❌ Falló después de 3 intentos"}
 
@@ -250,12 +239,15 @@ def crear_con_retry(workflow):
 # =========================
 
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     if update.effective_user.id != ALLOWED_USER:
         return
 
-    await update.message.reply_text("🧠 Generando flujo PRO...")
+    texto = update.message.text
 
-    wf = generar_flujo_completo()
+    await update.message.reply_text("🧠 Generando flujo inteligente...")
+
+    wf = generar_flujo_desde_texto(texto)
     estado[update.effective_user.id] = wf
 
     kb = [
@@ -264,11 +256,12 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
 
     await update.message.reply_text(
-        "🔥 Flujo listo (OCR + Banco + SaaS)",
+        "💀 Flujo listo (OCR + Banco + IA)",
         reply_markup=InlineKeyboardMarkup(kb)
     )
 
 async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     q = update.callback_query
     await q.answer()
 
@@ -276,10 +269,14 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if q.data == "ver":
         txt = json.dumps(estado[uid], indent=2)
-        await context.bot.send_message(q.message.chat.id, f"```json\n{txt[:4000]}\n```", parse_mode="Markdown")
+        await context.bot.send_message(
+            q.message.chat.id,
+            f"```json\n{txt[:4000]}\n```",
+            parse_mode="Markdown"
+        )
 
     elif q.data == "crear":
-        await context.bot.send_message(q.message.chat.id, "🚀 Creando en n8n...")
+        await context.bot.send_message(q.message.chat.id, "🚀 Creando flujo en n8n...")
         res = crear_con_retry(estado[uid])
         await context.bot.send_message(q.message.chat.id, str(res))
 
@@ -292,4 +289,5 @@ app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 app.add_handler(CallbackQueryHandler(botones))
 
+print("🔥 CLAW GOD MODE SAAS ACTIVO")
 app.run_polling()
