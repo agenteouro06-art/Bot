@@ -2,7 +2,6 @@ import os
 import json
 import asyncio
 import requests
-import re
 from dotenv import load_dotenv
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -15,25 +14,28 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 ALLOWED_USER = int(os.getenv("ALLOWED_USER"))
 N8N_URL = os.getenv("N8N_URL")
 N8N_API_KEY = os.getenv("N8N_API_KEY")
-CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY") # Necesario para la IA de Anthropic
 
 estado = {}
 
 # =========================
-# 🧠 DETECTOR INTELIGENTE (FALLBACK)
+# 🧠 DETECTOR INTELIGENTE
 # =========================
 def detectar_tipo(texto):
     t = texto.lower()
+
     if "whatsapp" in t and ("captura" in t or "imagen" in t):
         return "validador_pago"
+
     if "pedido" in t or "restaurante" in t:
         return "pedidos_restaurante"
+
     return "basico"
 
 
 # =========================
-# 🏗 GENERADORES MOCK (RESPALDO)
+# 🏗 GENERADORES REALES
 # =========================
+
 def flujo_validador():
     return {
         "name": "CLAW - Validador WhatsApp",
@@ -199,70 +201,13 @@ def flujo_basico():
 
 
 # =========================
-# 🤖 MOTOR MULTI-AGENTE (CLAUDE 3 HAIKU)
-# =========================
-def peticion_claude(texto_usuario):
-    """
-    Envía el prompt a Claude 3 Haiku para generar la estructura JSON del workflow.
-    """
-    if not CLAUDE_API_KEY:
-        print("⚠️ No se encontró CLAUDE_API_KEY en el entorno.")
-        return None
-
-    headers = {
-        "x-api-key": CLAUDE_API_KEY,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json"
-    }
-    
-    # El System Prompt define el comportamiento del Agente de Diseño
-    prompt_sistema = """Eres CLAW, un sistema multi-agente experto en arquitectura de n8n.
-Tu objetivo es traducir los requerimientos del usuario en un JSON válido de workflow para n8n.
-Debes crear la estructura completa con 'nodes' y 'connections'.
-Analiza el requerimiento: si piden Google Sheets, usa 'n8n-nodes-base.googleSheets'. Si piden IA, añade llamadas HTTP o nodos correspondientes.
-REGLA ESTRICTA: Devuelve ÚNICAMENTE un objeto JSON válido. Nada de saludos, nada de explicaciones en markdown, solo el JSON puro."""
-
-    payload = {
-        "model": "claude-3-haiku-20240307",
-        "max_tokens": 4000,
-        "system": prompt_sistema,
-        "messages": [
-            {"role": "user", "content": f"Por favor, crea un flujo en n8n para el siguiente requerimiento: {texto_usuario}"}
-        ]
-    }
-
-    try:
-        r = requests.post("https://api.anthropic.com/v1/messages", headers=headers, json=payload)
-        r.raise_for_status()
-        respuesta = r.json()['content'][0]['text']
-        
-        # Expresión regular para extraer solo el JSON ignorando el posible relleno del modelo
-        match = re.search(r'\{.*\}', respuesta, re.DOTALL)
-        if match:
-            return json.loads(match.group(0))
-        return json.loads(respuesta)
-    except Exception as e:
-        print(f"🔥 Error en el Agente de Claude: {e}")
-        return None
-
-# =========================
-# ASYNC WRAPPER PARA CLAUDE
-# =========================
-async def generar_flujo_ia(texto_usuario):
-    """
-    Ejecuta la llamada HTTP a Claude en un hilo separado para no bloquear el bot
-    """
-    return await asyncio.to_thread(peticion_claude, texto_usuario)
-
-
-# =========================
 # 🔧 NORMALIZAR
 # =========================
 def normalizar(wf):
     wf.pop("id", None)
     wf.pop("active", None)
 
-    for n in wf.get("nodes", []):
+    for n in wf["nodes"]:
         n["parameters"] = n.get("parameters", {})
         n["typeVersion"] = n.get("typeVersion", 1)
 
@@ -288,29 +233,23 @@ def crear_workflow(wf):
 
 
 # =========================
-# 🧠 ORQUESTADOR PRINCIPAL
+# 🧠 MULTI-AGENTE REAL
 # =========================
 async def procesar(update, context, texto):
 
     uid = update.effective_user.id
-    mensaje_estado = await update.message.reply_text("🧠 Agentes analizando y diseñando flujo...")
 
-    # 1. Intentamos que la IA diseñe el JSON dinámico
-    wf = await generar_flujo_ia(texto)
+    await update.message.reply_text("🧠 Analizando intención...")
+    tipo = detectar_tipo(texto)
 
-    # 2. Fallback si la IA falla o la API Key no está configurada
-    if wf:
-        await mensaje_estado.edit_text("🏗 Diseño generado exitosamente por Agente Claude Haiku.")
+    await update.message.reply_text(f"🏗 Tipo detectado: {tipo}")
+
+    if tipo == "validador_pago":
+        wf = flujo_validador()
+    elif tipo == "pedidos_restaurante":
+        wf = flujo_pedidos()
     else:
-        tipo = detectar_tipo(texto)
-        await mensaje_estado.edit_text(f"⚠️ IA no disponible. Usando template predefinido: {tipo}")
-        
-        if tipo == "validador_pago":
-            wf = flujo_validador()
-        elif tipo == "pedidos_restaurante":
-            wf = flujo_pedidos()
-        else:
-            wf = flujo_basico()
+        wf = flujo_basico()
 
     estado[uid] = wf
 
@@ -325,7 +264,7 @@ async def procesar(update, context, texto):
     ]
 
     await update.message.reply_text(
-        "💀 CLAW GOD FLOW listo para desplegar",
+        "💀 CLAW GOD FLOW generado correctamente",
         reply_markup=InlineKeyboardMarkup(kb)
     )
 
@@ -341,11 +280,34 @@ async def botones(update, context):
 
     if query.data == "crear":
         res = crear_workflow(estado[uid])
-        # Intentamos obtener el ID del workflow creado o mostramos todo el dict
-        id_creado = res.get('id', 'Error') if isinstance(res, dict) else 'Respuesta inesperada'
-        await query.message.reply_text(f"✅ Workflow creado exitosamente. ID: {id_creado}")
+        await query.message.reply_text(f"✅ {res}")
 
     elif query.data == "ver":
         txt = json.dumps(estado[uid], indent=2)
-        # Telegram permite max ~4096 caracteres. Mostramos los primeros 4000.
-        await query.message.reply_text(f"
+        await query.message.reply_text(f"```json\n{txt[:4000]}\n```", parse_mode="Markdown")
+
+    elif query.data == "regen":
+        await query.message.reply_text("🔄 Regenerando inteligente...")
+        await procesar(query, context, "regen avanzado")
+
+
+# =========================
+# 📩 MENSAJES
+# =========================
+async def handle(update, context):
+    if update.effective_user.id != ALLOWED_USER:
+        return
+
+    await procesar(update, context, update.message.text)
+
+
+# =========================
+# 🚀 INICIO
+# =========================
+app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+app.add_handler(CallbackQueryHandler(botones))
+
+print("🔥 CLAW GOD REAL ACTIVO")
+app.run_polling()
