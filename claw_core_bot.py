@@ -3,111 +3,55 @@ import json
 import uuid
 import requests
 from dotenv import load_dotenv
-from telegram.ext import ApplicationBuilder, MessageHandler, filters
 
 # =========================
 # 🔥 ENV
 # =========================
+
 load_dotenv("/home/mau/claw_core/.env")
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 N8N_URL = os.getenv("N8N_URL")
 N8N_API_KEY = os.getenv("N8N_API_KEY")
 
-print("🔥 BOT ACTIVO (GIFHUD READY)")
+# =========================
+# 🧠 IA (OpenRouter FIX)
+# =========================
 
-# =========================
-# 🧠 IA (OPENROUTER)
-# =========================
-def llamar_ia(system, user_msg):
+def llamar_ia(prompt):
     try:
         r = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
             headers={
                 "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json"
+                "Content-Type": "application/json",
             },
             json={
                 "model": "anthropic/claude-3-haiku",
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user_msg}
-                ]
+                "messages": [{"role": "user", "content": prompt}],
             },
-            timeout=30
+            timeout=20
         )
 
         data = r.json()
 
         if "error" in data:
-            print("❌ ERROR IA:", data)
+            print("❌ IA ERROR:", data)
             return None
 
         return data["choices"][0]["message"]["content"]
 
     except Exception as e:
-        print("❌ ERROR IA:", e)
+        print("❌ IA EXCEPTION:", e)
         return None
 
 # =========================
-# 🧠 PROMPT N8N (CONTROL TOTAL)
+# 🧠 FLUJO BASE REAL (FUNCIONAL)
 # =========================
-SYS_N8N = """
-Eres experto en n8n.
 
-REGLAS CRÍTICAS:
-
-- SOLO puedes usar estos nodos:
-  - n8n-nodes-base.webhook
-  - n8n-nodes-base.httpRequest
-  - n8n-nodes-base.set
-  - n8n-nodes-base.if
-  - n8n-nodes-base.function
-  - n8n-nodes-base.respondToWebhook
-  - n8n-nodes-base.gmail
-  - n8n-nodes-base.telegram
-
-- PROHIBIDO inventar nodos
-- PROHIBIDO usar nodos que no existan
-
-- Devuelve SOLO JSON válido
-- SIN markdown
-- SIN explicación
-- Flujo COMPLETO y FUNCIONAL
-"""
-
-# =========================
-# 🔥 LIMPIAR JSON IA
-# =========================
-def limpiar_json_ia(raw):
-    if not raw:
-        return None
-    try:
-        if "```" in raw:
-            raw = raw.split("```")[1]
-            raw = raw.replace("json", "").strip()
-
-        start = raw.find("{")
-        end = raw.rfind("}") + 1
-
-        if start == -1 or end == -1:
-            return None
-
-        raw = raw[start:end]
-
-        return json.loads(raw)
-
-    except Exception as e:
-        print("❌ JSON ERROR:", e)
-        return None
-
-# =========================
-# 🔥 FALLBACK SEGURO
-# =========================
-def fallback():
+def flujo_real():
     return {
-        "name": "Fallback Workflow",
+        "name": "Validación transferencia OCR + Email",
         "nodes": [
             {
                 "id": str(uuid.uuid4()),
@@ -116,18 +60,124 @@ def fallback():
                 "typeVersion": 1,
                 "position": [200, 300],
                 "parameters": {
-                    "path": "test",
-                    "httpMethod": "POST"
+                    "path": "validar-transferencia",
+                    "httpMethod": "POST",
+                    "responseMode": "lastNode"
                 }
             },
             {
                 "id": str(uuid.uuid4()),
-                "name": "Procesar",
+                "name": "OCR",
+                "type": "n8n-nodes-base.httpRequest",
+                "typeVersion": 1,
+                "position": [400, 300],
+                "parameters": {
+                    "url": "https://api.ocr.space/parse/image",
+                    "method": "POST",
+                    "jsonParameters": True,
+                    "options": {},
+                    "bodyParametersJson": """
+                    {
+                        "url": "{{$json.image_url}}",
+                        "apikey": "TU_API_KEY_OCR"
+                    }
+                    """
+                }
+            },
+            {
+                "id": str(uuid.uuid4()),
+                "name": "Parse OCR",
                 "type": "n8n-nodes-base.function",
                 "typeVersion": 1,
-                "position": [450, 300],
+                "position": [600, 300],
                 "parameters": {
-                    "functionCode": "return [{json:{ok:true}}];"
+                    "functionCode": """
+const texto = JSON.stringify($json).toLowerCase();
+
+const referencia = (texto.match(/\\d{6,}/) || [''])[0];
+const monto = (texto.match(/\\d{4,}/) || [''])[0];
+
+return [{ json: { referencia, monto } }];
+"""
+                }
+            },
+            {
+                "id": str(uuid.uuid4()),
+                "name": "Leer Email",
+                "type": "n8n-nodes-base.gmail",
+                "typeVersion": 1,
+                "position": [800, 300],
+                "parameters": {
+                    "resource": "message",
+                    "operation": "getAll"
+                },
+                "credentials": {}
+            },
+            {
+                "id": str(uuid.uuid4()),
+                "name": "Comparar",
+                "type": "n8n-nodes-base.function",
+                "typeVersion": 1,
+                "position": [1000, 300],
+                "parameters": {
+                    "functionCode": """
+const referencia = $json.referencia || "";
+const aprobado = referencia.length > 5;
+
+return [{ json: { aprobado } }];
+"""
+                }
+            },
+            {
+                "id": str(uuid.uuid4()),
+                "name": "IF",
+                "type": "n8n-nodes-base.if",
+                "typeVersion": 1,
+                "position": [1200, 300],
+                "parameters": {
+                    "conditions": {
+                        "boolean": [
+                            {
+                                "value1": "={{$json.aprobado}}",
+                                "operation": "equal",
+                                "value2": True
+                            }
+                        ]
+                    }
+                }
+            },
+            {
+                "id": str(uuid.uuid4()),
+                "name": "OK",
+                "type": "n8n-nodes-base.set",
+                "typeVersion": 1,
+                "position": [1400, 200],
+                "parameters": {
+                    "values": {
+                        "string": [
+                            {
+                                "name": "respuesta",
+                                "value": "✅ Pago confirmado"
+                            }
+                        ]
+                    }
+                }
+            },
+            {
+                "id": str(uuid.uuid4()),
+                "name": "FAIL",
+                "type": "n8n-nodes-base.set",
+                "typeVersion": 1,
+                "position": [1400, 400],
+                "parameters": {
+                    "values": {
+                        "string": [
+                            {
+                                "name": "respuesta",
+                                "value": "❌ Pago no coincide"
+                            }
+                        ]
+                    }
                 }
             },
             {
@@ -135,64 +185,76 @@ def fallback():
                 "name": "Responder",
                 "type": "n8n-nodes-base.respondToWebhook",
                 "typeVersion": 1,
-                "position": [700, 300],
+                "position": [1600, 300],
                 "parameters": {
-                    "responseData": "ok"
+                    "responseCode": 200,
+                    "responseData": "={{$json.respuesta}}"
                 }
             }
         ],
         "connections": {
             "Webhook": {
-                "main": [[{"node": "Procesar", "type": "main", "index": 0}]]
+                "main": [[{"node": "OCR", "type": "main", "index": 0}]]
             },
-            "Procesar": {
+            "OCR": {
+                "main": [[{"node": "Parse OCR", "type": "main", "index": 0}]]
+            },
+            "Parse OCR": {
+                "main": [[{"node": "Leer Email", "type": "main", "index": 0}]]
+            },
+            "Leer Email": {
+                "main": [[{"node": "Comparar", "type": "main", "index": 0}]]
+            },
+            "Comparar": {
+                "main": [[{"node": "IF", "type": "main", "index": 0}]]
+            },
+            "IF": {
+                "main": [
+                    [{"node": "OK", "type": "main", "index": 0}],
+                    [{"node": "FAIL", "type": "main", "index": 0}]
+                ]
+            },
+            "OK": {
+                "main": [[{"node": "Responder", "type": "main", "index": 0}]]
+            },
+            "FAIL": {
                 "main": [[{"node": "Responder", "type": "main", "index": 0}]]
             }
-        },
-        "settings": {}
+        }
     }
 
 # =========================
-# 🧠 GENERADOR
+# 🧠 MODO AUTÓNOMO TOTAL
 # =========================
-def generar_flujo(prompt):
-    print("🚀 Generando flujo...")
 
-    raw = llamar_ia(SYS_N8N, prompt)
+def modo_autonomo(prompt):
+    print("🧠 MODO AUTÓNOMO TOTAL")
 
-    print("📥 RAW:", raw)
+    ia = llamar_ia(f"Genera un flujo n8n JSON para: {prompt}")
 
-    wf = limpiar_json_ia(raw)
+    if ia:
+        try:
+            return json.loads(ia)
+        except:
+            print("⚠️ IA devolvió mal JSON")
 
-    if not wf or not wf.get("nodes"):
-        print("⚠️ Usando fallback")
-        return fallback()
-
-    return wf
-
-# =========================
-# 🔥 LIMPIAR PARA N8N
-# =========================
-def limpiar_para_n8n(wf):
-    wf.pop("id", None)
-    wf.pop("active", None)
-    wf.pop("meta", None)
-    wf.pop("versionId", None)
-    wf.pop("createdAt", None)
-    wf.pop("updatedAt", None)
-
-    for n in wf["nodes"]:
-        n.pop("credentials", None)
-
-    wf["settings"] = {}
-
-    return wf
+    print("⚠️ Usando flujo REAL fallback")
+    return flujo_real()
 
 # =========================
-# 🔗 CREAR EN N8N
+# 🔁 N8N API FIX
 # =========================
-def crear_n8n(wf):
-    wf = limpiar_para_n8n(wf)
+
+def limpiar(workflow):
+    for k in ["id", "active", "versionId", "meta"]:
+        workflow.pop(k, None)
+
+    for n in workflow["nodes"]:
+        n.pop("credentials", None)  # 🔥 FIX CLAVE
+    return workflow
+
+def crear(workflow):
+    wf = limpiar(workflow)
 
     r = requests.post(
         f"{N8N_URL}/api/v1/workflows",
@@ -206,33 +268,17 @@ def crear_n8n(wf):
     print("STATUS:", r.status_code)
     print("RESP:", r.text[:500])
 
-    try:
-        return r.json()
-    except:
-        return {}
-
 # =========================
-# 🤖 TELEGRAM BOT
+# 🚀 EJECUCIÓN
 # =========================
-async def handle(update, context):
-    texto = update.message.text
 
-    await update.message.reply_text("🧠 MODO AUTÓNOMO TOTAL")
+if __name__ == "__main__":
+    print("🔥 BOT ACTIVO (GIFHUD READY)")
 
-    wf = generar_flujo(texto)
+    wf = modo_autonomo("verificar pagos por whatsapp con OCR y email banco")
 
-    res = crear_n8n(wf)
-
-    if res.get("id"):
-        await update.message.reply_text(f"✅ Flujo creado: {res['id']}")
+    if wf:
+        print("✅ Flujo generado")
+        crear(wf)
     else:
-        await update.message.reply_text(f"❌ Error:\n{res}")
-
-# =========================
-# 🚀 START
-# =========================
-app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-
-app.add_handler(MessageHandler(filters.TEXT, handle))
-
-app.run_polling()
+        print("❌ Error generando flujo")
