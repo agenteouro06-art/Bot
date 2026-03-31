@@ -14,8 +14,10 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 N8N_URL = os.getenv("N8N_URL")
 N8N_API_KEY = os.getenv("N8N_API_KEY")
 
+print("🔥 BOT ACTIVO (GIFHUD READY)")
+
 # =========================
-# 🧠 IA (OpenRouter FIX)
+# 🧠 OPENROUTER FIX
 # =========================
 
 def llamar_ia(prompt):
@@ -24,11 +26,12 @@ def llamar_ia(prompt):
             "https://openrouter.ai/api/v1/chat/completions",
             headers={
                 "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json",
+                "Content-Type": "application/json"
             },
             json={
                 "model": "anthropic/claude-3-haiku",
                 "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 2000
             },
             timeout=20
         )
@@ -36,22 +39,24 @@ def llamar_ia(prompt):
         data = r.json()
 
         if "error" in data:
-            print("❌ IA ERROR:", data)
+            print("❌ ERROR IA:", data)
             return None
 
         return data["choices"][0]["message"]["content"]
 
     except Exception as e:
-        print("❌ IA EXCEPTION:", e)
+        print("❌ ERROR IA:", e)
         return None
 
 # =========================
-# 🧠 FLUJO BASE REAL (FUNCIONAL)
+# 🧬 FLUJO REAL (100% válido)
 # =========================
 
 def flujo_real():
     return {
         "name": "Validación transferencia OCR + Email",
+        "settings": {},  # 🔥 FIX CRÍTICO
+
         "nodes": [
             {
                 "id": str(uuid.uuid4()),
@@ -75,7 +80,6 @@ def flujo_real():
                     "url": "https://api.ocr.space/parse/image",
                     "method": "POST",
                     "jsonParameters": True,
-                    "options": {},
                     "bodyParametersJson": """
                     {
                         "url": "{{$json.image_url}}",
@@ -93,10 +97,8 @@ def flujo_real():
                 "parameters": {
                     "functionCode": """
 const texto = JSON.stringify($json).toLowerCase();
-
 const referencia = (texto.match(/\\d{6,}/) || [''])[0];
 const monto = (texto.match(/\\d{4,}/) || [''])[0];
-
 return [{ json: { referencia, monto } }];
 """
                 }
@@ -110,8 +112,7 @@ return [{ json: { referencia, monto } }];
                 "parameters": {
                     "resource": "message",
                     "operation": "getAll"
-                },
-                "credentials": {}
+                }
             },
             {
                 "id": str(uuid.uuid4()),
@@ -123,7 +124,6 @@ return [{ json: { referencia, monto } }];
                     "functionCode": """
 const referencia = $json.referencia || "";
 const aprobado = referencia.length > 5;
-
 return [{ json: { aprobado } }];
 """
                 }
@@ -155,10 +155,7 @@ return [{ json: { aprobado } }];
                 "parameters": {
                     "values": {
                         "string": [
-                            {
-                                "name": "respuesta",
-                                "value": "✅ Pago confirmado"
-                            }
+                            {"name": "respuesta", "value": "✅ Pago confirmado"}
                         ]
                     }
                 }
@@ -172,10 +169,7 @@ return [{ json: { aprobado } }];
                 "parameters": {
                     "values": {
                         "string": [
-                            {
-                                "name": "respuesta",
-                                "value": "❌ Pago no coincide"
-                            }
+                            {"name": "respuesta", "value": "❌ Pago no coincide"}
                         ]
                     }
                 }
@@ -192,6 +186,7 @@ return [{ json: { aprobado } }];
                 }
             }
         ],
+
         "connections": {
             "Webhook": {
                 "main": [[{"node": "OCR", "type": "main", "index": 0}]]
@@ -224,61 +219,57 @@ return [{ json: { aprobado } }];
     }
 
 # =========================
-# 🧠 MODO AUTÓNOMO TOTAL
-# =========================
-
-def modo_autonomo(prompt):
-    print("🧠 MODO AUTÓNOMO TOTAL")
-
-    ia = llamar_ia(f"Genera un flujo n8n JSON para: {prompt}")
-
-    if ia:
-        try:
-            return json.loads(ia)
-        except:
-            print("⚠️ IA devolvió mal JSON")
-
-    print("⚠️ Usando flujo REAL fallback")
-    return flujo_real()
-
-# =========================
-# 🔁 N8N API FIX
+# 🔧 LIMPIEZA N8N (FIX FINAL)
 # =========================
 
 def limpiar(workflow):
+    workflow["settings"] = {}
+
     for k in ["id", "active", "versionId", "meta"]:
         workflow.pop(k, None)
 
     for n in workflow["nodes"]:
-        n.pop("credentials", None)  # 🔥 FIX CLAVE
+        n.pop("credentials", None)
+
     return workflow
 
-def crear(workflow):
-    wf = limpiar(workflow)
+# =========================
+# 🚀 CREAR EN N8N
+# =========================
 
-    r = requests.post(
-        f"{N8N_URL}/api/v1/workflows",
-        headers={
-            "X-N8N-API-KEY": N8N_API_KEY,
-            "Content-Type": "application/json"
-        },
-        json=wf
-    )
+def crear_flujo():
+    print("🧠 MODO AUTÓNOMO TOTAL")
 
-    print("STATUS:", r.status_code)
-    print("RESP:", r.text[:500])
+    flujo = flujo_real()
+    flujo = limpiar(flujo)
+
+    try:
+        r = requests.post(
+            f"{N8N_URL}/api/v1/workflows",
+            headers={
+                "X-N8N-API-KEY": N8N_API_KEY,
+                "Content-Type": "application/json"
+            },
+            json=flujo,
+            timeout=20
+        )
+
+        print("STATUS:", r.status_code)
+        print("RESP:", r.text[:500])
+
+        data = r.json()
+
+        if data.get("id"):
+            print(f"\n✅ Flujo creado:\nID: {data['id']}")
+        else:
+            print("\n❌ Error:", data)
+
+    except Exception as e:
+        print("❌ ERROR:", e)
 
 # =========================
-# 🚀 EJECUCIÓN
+# 🚀 RUN
 # =========================
 
 if __name__ == "__main__":
-    print("🔥 BOT ACTIVO (GIFHUD READY)")
-
-    wf = modo_autonomo("verificar pagos por whatsapp con OCR y email banco")
-
-    if wf:
-        print("✅ Flujo generado")
-        crear(wf)
-    else:
-        print("❌ Error generando flujo")
+    crear_flujo()
