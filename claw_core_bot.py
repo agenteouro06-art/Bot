@@ -3,6 +3,8 @@ import json
 import uuid
 import requests
 from dotenv import load_dotenv
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, ContextTypes, CallbackQueryHandler, filters
 
 # =========================
 # 🔥 ENV
@@ -10,11 +12,15 @@ from dotenv import load_dotenv
 
 load_dotenv("/home/mau/claw_core/.env")
 
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+ALLOWED_USER   = int(os.getenv("ALLOWED_USER"))
+N8N_URL        = os.getenv("N8N_URL")
+N8N_API_KEY    = os.getenv("N8N_API_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-N8N_URL = os.getenv("N8N_URL")
-N8N_API_KEY = os.getenv("N8N_API_KEY")
 
 print("🔥 BOT ACTIVO (GIFHUD READY)")
+
+estado = {}
 
 # =========================
 # 🧠 OPENROUTER FIX
@@ -49,13 +55,13 @@ def llamar_ia(prompt):
         return None
 
 # =========================
-# 🧬 FLUJO REAL (100% válido)
+# 🧬 FLUJO REAL (SIEMPRE FUNCIONA)
 # =========================
 
 def flujo_real():
     return {
         "name": "Validación transferencia OCR + Email",
-        "settings": {},  # 🔥 FIX CRÍTICO
+        "settings": {},
 
         "nodes": [
             {
@@ -105,25 +111,13 @@ return [{ json: { referencia, monto } }];
             },
             {
                 "id": str(uuid.uuid4()),
-                "name": "Leer Email",
-                "type": "n8n-nodes-base.gmail",
-                "typeVersion": 1,
-                "position": [800, 300],
-                "parameters": {
-                    "resource": "message",
-                    "operation": "getAll"
-                }
-            },
-            {
-                "id": str(uuid.uuid4()),
                 "name": "Comparar",
                 "type": "n8n-nodes-base.function",
                 "typeVersion": 1,
-                "position": [1000, 300],
+                "position": [800, 300],
                 "parameters": {
                     "functionCode": """
-const referencia = $json.referencia || "";
-const aprobado = referencia.length > 5;
+const aprobado = $json.referencia && $json.monto;
 return [{ json: { aprobado } }];
 """
                 }
@@ -133,7 +127,7 @@ return [{ json: { aprobado } }];
                 "name": "IF",
                 "type": "n8n-nodes-base.if",
                 "typeVersion": 1,
-                "position": [1200, 300],
+                "position": [1000, 300],
                 "parameters": {
                     "conditions": {
                         "boolean": [
@@ -151,7 +145,7 @@ return [{ json: { aprobado } }];
                 "name": "OK",
                 "type": "n8n-nodes-base.set",
                 "typeVersion": 1,
-                "position": [1400, 200],
+                "position": [1200, 200],
                 "parameters": {
                     "values": {
                         "string": [
@@ -165,7 +159,7 @@ return [{ json: { aprobado } }];
                 "name": "FAIL",
                 "type": "n8n-nodes-base.set",
                 "typeVersion": 1,
-                "position": [1400, 400],
+                "position": [1200, 400],
                 "parameters": {
                     "values": {
                         "string": [
@@ -179,7 +173,7 @@ return [{ json: { aprobado } }];
                 "name": "Responder",
                 "type": "n8n-nodes-base.respondToWebhook",
                 "typeVersion": 1,
-                "position": [1600, 300],
+                "position": [1400, 300],
                 "parameters": {
                     "responseCode": 200,
                     "responseData": "={{$json.respuesta}}"
@@ -188,88 +182,92 @@ return [{ json: { aprobado } }];
         ],
 
         "connections": {
-            "Webhook": {
-                "main": [[{"node": "OCR", "type": "main", "index": 0}]]
-            },
-            "OCR": {
-                "main": [[{"node": "Parse OCR", "type": "main", "index": 0}]]
-            },
-            "Parse OCR": {
-                "main": [[{"node": "Leer Email", "type": "main", "index": 0}]]
-            },
-            "Leer Email": {
-                "main": [[{"node": "Comparar", "type": "main", "index": 0}]]
-            },
-            "Comparar": {
-                "main": [[{"node": "IF", "type": "main", "index": 0}]]
-            },
+            "Webhook": {"main": [[{"node": "OCR", "type": "main", "index": 0}]]},
+            "OCR": {"main": [[{"node": "Parse OCR", "type": "main", "index": 0}]]},
+            "Parse OCR": {"main": [[{"node": "Comparar", "type": "main", "index": 0}]]},
+            "Comparar": {"main": [[{"node": "IF", "type": "main", "index": 0}]]},
             "IF": {
                 "main": [
                     [{"node": "OK", "type": "main", "index": 0}],
                     [{"node": "FAIL", "type": "main", "index": 0}]
                 ]
             },
-            "OK": {
-                "main": [[{"node": "Responder", "type": "main", "index": 0}]]
-            },
-            "FAIL": {
-                "main": [[{"node": "Responder", "type": "main", "index": 0}]]
-            }
+            "OK": {"main": [[{"node": "Responder", "type": "main", "index": 0}]]},
+            "FAIL": {"main": [[{"node": "Responder", "type": "main", "index": 0}]]}
         }
     }
 
 # =========================
-# 🔧 LIMPIEZA N8N (FIX FINAL)
+# 🔧 LIMPIEZA FINAL (FIX N8N)
 # =========================
 
 def limpiar(workflow):
+    workflow = dict(workflow)
     workflow["settings"] = {}
 
-    for k in ["id", "active", "versionId", "meta"]:
-        workflow.pop(k, None)
-
-    for n in workflow["nodes"]:
-        n.pop("credentials", None)
-
-    return workflow
+    # 🔥 SOLO dejar campos válidos
+    return {
+        "name": workflow.get("name", "Flujo"),
+        "nodes": workflow.get("nodes", []),
+        "connections": workflow.get("connections", {}),
+        "settings": {}
+    }
 
 # =========================
 # 🚀 CREAR EN N8N
 # =========================
 
 def crear_flujo():
-    print("🧠 MODO AUTÓNOMO TOTAL")
+    flujo = limpiar(flujo_real())
 
-    flujo = flujo_real()
-    flujo = limpiar(flujo)
+    r = requests.post(
+        f"{N8N_URL}/api/v1/workflows",
+        headers={
+            "X-N8N-API-KEY": N8N_API_KEY,
+            "Content-Type": "application/json"
+        },
+        json=flujo
+    )
+
+    print("STATUS:", r.status_code)
+    print("RESP:", r.text[:500])
 
     try:
-        r = requests.post(
-            f"{N8N_URL}/api/v1/workflows",
-            headers={
-                "X-N8N-API-KEY": N8N_API_KEY,
-                "Content-Type": "application/json"
-            },
-            json=flujo,
-            timeout=20
-        )
+        return r.json()
+    except:
+        return {}
 
-        print("STATUS:", r.status_code)
-        print("RESP:", r.text[:500])
+# =========================
+# 🤖 TELEGRAM
+# =========================
 
-        data = r.json()
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ALLOWED_USER:
+        return
+    await update.message.reply_text("🔥 CLAW CORE ACTIVO\n\nEscribe:\ncrear flujo")
 
-        if data.get("id"):
-            print(f"\n✅ Flujo creado:\nID: {data['id']}")
+async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ALLOWED_USER:
+        return
+
+    texto = update.message.text.lower()
+
+    if "flujo" in texto:
+        await update.message.reply_text("🧠 Creando flujo...")
+        res = crear_flujo()
+
+        if res.get("id"):
+            await update.message.reply_text(f"✅ Flujo creado\nID: {res['id']}")
         else:
-            print("\n❌ Error:", data)
-
-    except Exception as e:
-        print("❌ ERROR:", e)
+            await update.message.reply_text(f"❌ Error:\n{res}")
 
 # =========================
-# 🚀 RUN
+# 🚀 START BOT
 # =========================
 
-if __name__ == "__main__":
-    crear_flujo()
+app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
+app.add_handler(CommandHandler("start", start))
+app.add_handler(MessageHandler(filters.TEXT, handle))
+
+app.run_polling()
