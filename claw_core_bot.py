@@ -23,35 +23,6 @@ estado = {}
 # 🧠 GENERADOR INTELIGENTE
 # =========================
 
-def generar_desde_texto(prompt):
-    prompt = prompt.lower()
-
-    # 👉 detección simple tipo IA
-    if "ocr" in prompt or "captura" in prompt:
-        return generar_flujo_completo()
-
-    if "pago" in prompt or "banco" in prompt:
-        return generar_flujo_completo()
-
-    # fallback
-    return generar_flujo_completo()
-
-
-# =========================
-# 🧠 CLONADOR MARKETPLACE (SIMULADO PRO)
-# =========================
-
-def clonar_marketplace():
-    # simula adaptar flujos reales conocidos
-    wf = generar_flujo_completo()
-    wf["name"] += " CLONADO"
-    return wf
-
-
-# =========================
-# 🧠 GENERADOR PRINCIPAL (OCR + BANCO + WHATSAPP)
-# =========================
-
 def generar_flujo_completo():
     return {
         "name": f"WhatsApp OCR Pago PRO {random.randint(100,999)}",
@@ -92,14 +63,14 @@ def generar_flujo_completo():
                 "position": [700, 300],
                 "parameters": {
                     "functionCode": """
-const raw = JSON.stringify($json).toLowerCase();
-
-let referencia = (raw.match(/\\d{6,}/) || [''])[0];
-let monto = (raw.match(/\\d{4,}/) || [''])[0];
+const raw = JSON.stringify($json);
+let texto = raw.toLowerCase();
+let referencia = (texto.match(/\\d{6,}/) || [''])[0];
+let monto = (texto.match(/\\d{4,}/) || [''])[0];
 
 return [{
   json: {
-    texto: raw,
+    texto,
     referencia,
     monto
   }
@@ -189,49 +160,55 @@ return [{
             "OK": {"main": [[{"node": "Responder","type": "main","index": 0}]]},
             "FAIL": {"main": [[{"node": "Responder","type": "main","index": 0}]]}
         },
-        "settings": {}  # 🔥 CRÍTICO: vacío
+        "settings": {}
     }
 
-
 # =========================
-# 🧹 LIMPIADOR (FIX REAL)
+# 🧹 FIX PRO N8N (CRÍTICO)
 # =========================
 
 def limpiar(workflow):
-
-    # eliminar basura de n8n
+    # eliminar basura
     for k in ["id","active","meta","versionId","staticData","pinData","createdAt","updatedAt"]:
         workflow.pop(k, None)
 
-    # 🔥 settings SIEMPRE VACÍO
+    # ⚠️ FIX CLAVE
     workflow["settings"] = {}
 
-    # evitar flujos vacíos
+    # evitar vacío
     if not workflow.get("nodes"):
         return generar_flujo_completo()
 
-    # evitar nodos duplicados
-    names = set()
+    # eliminar duplicados
+    nombres = set()
     nuevos = []
     for n in workflow["nodes"]:
-        if n["name"] not in names:
-            names.add(n["name"])
+        if n["name"] not in nombres:
+            nombres.add(n["name"])
             nuevos.append(n)
     workflow["nodes"] = nuevos
 
     return workflow
 
+# =========================
+# 🧠 AUTO-FIX IA
+# =========================
+
+def autofix(workflow):
+    if "Webhook" not in workflow["connections"]:
+        workflow = generar_flujo_completo()
+    return workflow
 
 # =========================
-# 🔁 CREAR CON RETRY + AUTO-FIX
+# 🔁 CREACIÓN CON IA + RETRY
 # =========================
 
 def crear_con_retry(workflow):
-
     for intento in range(3):
         print(f"🚀 Intento {intento+1}")
 
         wf = limpiar(workflow)
+        wf = autofix(wf)
 
         r = requests.post(
             f"{N8N_URL}/api/v1/workflows",
@@ -248,18 +225,25 @@ def crear_con_retry(workflow):
         if r.status_code in [200,201]:
             return r.json()
 
-        # 👉 AUTO FIX INTELIGENTE
+        # IA regenera variante
         workflow = generar_flujo_completo()
 
     return {"error": "❌ Falló después de 3 intentos"}
 
+# =========================
+# 🧠 GENERADOR DESDE TEXTO
+# =========================
+
+def generar_desde_texto(texto):
+    if "pago" in texto.lower() or "ocr" in texto.lower():
+        return generar_flujo_completo()
+    return generar_flujo_completo()
 
 # =========================
-# 🤖 BOT TELEGRAM (SaaS)
+# 🤖 BOT
 # =========================
 
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     if update.effective_user.id != ALLOWED_USER:
         return
 
@@ -268,23 +252,19 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🧠 Generando flujo inteligente...")
 
     wf = generar_desde_texto(texto)
-
     estado[update.effective_user.id] = wf
 
     kb = [
         [InlineKeyboardButton("🚀 Crear en n8n", callback_data="crear")],
-        [InlineKeyboardButton("📄 Ver JSON", callback_data="ver")],
-        [InlineKeyboardButton("🧠 Clonar marketplace", callback_data="clonar")]
+        [InlineKeyboardButton("📄 Ver JSON", callback_data="ver")]
     ]
 
     await update.message.reply_text(
-        "💀 Flujo SaaS listo (OCR + Banco + WhatsApp)",
+        "🔥 SaaS Flow listo (OCR + Banco + WhatsApp)",
         reply_markup=InlineKeyboardMarkup(kb)
     )
 
-
 async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     q = update.callback_query
     await q.answer()
 
@@ -295,24 +275,17 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(q.message.chat.id, f"```json\n{txt[:4000]}\n```", parse_mode="Markdown")
 
     elif q.data == "crear":
-        await context.bot.send_message(q.message.chat.id, "🚀 Creando flujo real...")
+        await context.bot.send_message(q.message.chat.id, "🚀 Deploy SaaS...")
         res = crear_con_retry(estado[uid])
         await context.bot.send_message(q.message.chat.id, str(res))
-
-    elif q.data == "clonar":
-        wf = clonar_marketplace()
-        estado[uid] = wf
-        await context.bot.send_message(q.message.chat.id, "🧠 Flujo clonado tipo marketplace listo")
-
 
 # =========================
 # 🚀 START
 # =========================
 
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 app.add_handler(CallbackQueryHandler(botones))
 
-print("🔥 CLAW SaaS REAL ACTIVO")
+print("🔥 CLAW SaaS GOD MODE ACTIVO")
 app.run_polling()
