@@ -1,12 +1,23 @@
-import os, json, requests, re
+import os, json, requests
 from dotenv import load_dotenv
 
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder, MessageHandler, CommandHandler,
+    ContextTypes, CallbackQueryHandler, filters
+)
+
+# =========================
+# 🔐 ENV
+# =========================
 load_dotenv("/home/mau/claw_core/.env")
 
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+ALLOWED_USER   = int(os.getenv("ALLOWED_USER", "0"))
 OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY")
 
 # =========================
-# 🔥 OPENROUTER CALL
+# 🤖 OPENROUTER
 # =========================
 def or_chat(system, user, max_tokens=2000):
     url = "https://openrouter.ai/api/v1/chat/completions"
@@ -26,11 +37,15 @@ def or_chat(system, user, max_tokens=2000):
     }
 
     r = requests.post(url, headers=headers, json=data)
-    return r.json()["choices"][0]["message"]["content"]
 
+    try:
+        return r.json()["choices"][0]["message"]["content"]
+    except:
+        print("ERROR OPENROUTER:", r.text)
+        return '{"error":"fail"}'
 
 # =========================
-# 🧹 LIMPIADOR JSON
+# 🧹 LIMPIAR JSON
 # =========================
 def limpiar_json(raw):
     if "```" in raw:
@@ -43,146 +58,120 @@ def limpiar_json(raw):
 
     return raw[inicio:fin]
 
-
 # =========================
-# 🧬 BASE LOCAL (REAL)
+# 🧬 PLANTILLAS
 # =========================
-PLANTILLAS = [
-{
-"name": "Pedidos WhatsApp",
-"nodes": [
-{"id":"1","name":"Webhook","type":"n8n-nodes-base.webhook","typeVersion":2,"position":[200,300],"parameters":{"path":"pedido","httpMethod":"POST"}},
-{"id":"2","name":"Set Pedido","type":"n8n-nodes-base.set","typeVersion":2,"position":[450,300],"parameters":{"values":{"string":[{"name":"pedido","value":"={{$json.body}}"}]}}},
-{"id":"3","name":"Google Sheets","type":"n8n-nodes-base.googleSheets","typeVersion":4,"position":[700,300],"parameters":{"operation":"append"}}
-],
-"connections":{
-"Webhook":{"main":[[{"node":"Set Pedido","type":"main","index":0}]]},
-"Set Pedido":{"main":[[{"node":"Google Sheets","type":"main","index":0}]]}
-},
-"settings":{},
-"pinData":{}
-},
-
-{
-"name": "Webhook Básico",
-"nodes":[
-{"id":"1","name":"Webhook","type":"n8n-nodes-base.webhook","typeVersion":2,"position":[200,300],"parameters":{}},
-{"id":"2","name":"Respuesta","type":"n8n-nodes-base.set","typeVersion":2,"position":[450,300],"parameters":{"values":{"string":[{"name":"msg","value":"ok"}]}}}
-],
-"connections":{
-"Webhook":{"main":[[{"node":"Respuesta","type":"main","index":0}]]}
-},
-"settings":{},
-"pinData":{}
+PLANTILLAS = {
+    "pedido": {
+        "name": "Pedidos WhatsApp",
+        "nodes": [
+            {"id":"1","name":"Webhook","type":"n8n-nodes-base.webhook","typeVersion":2,"position":[200,300],"parameters":{"path":"pedido","httpMethod":"POST"}},
+            {"id":"2","name":"Set Pedido","type":"n8n-nodes-base.set","typeVersion":2,"position":[450,300],"parameters":{"values":{"string":[{"name":"pedido","value":"={{$json.body}}"}]}}},
+            {"id":"3","name":"Google Sheets","type":"n8n-nodes-base.googleSheets","typeVersion":4,"position":[700,300],"parameters":{"operation":"append"}}
+        ],
+        "connections":{
+            "Webhook":{"main":[[{"node":"Set Pedido","type":"main","index":0}]]},
+            "Set Pedido":{"main":[[{"node":"Google Sheets","type":"main","index":0}]]}
+        },
+        "settings":{},
+        "pinData":{}
+    }
 }
-]
 
-
-# =========================
-# 🌐 SCRAPER (BASE REALISTA)
-# =========================
-def buscar_workflows_online(desc):
-    try:
-        # Simulación preparada para scraping real
-        url = f"https://api.github.com/search/code?q=n8n+workflow+json+{desc}"
-        r = requests.get(url, timeout=5)
-
-        if r.status_code != 200:
-            return None
-
-        data = r.json()
-
-        if "items" not in data or not data["items"]:
-            return None
-
-        # 🔥 aquí puedes luego descargar raw_url
-        return None
-
-    except:
-        return None
-
-
-# =========================
-# 🧠 ELEGIR BASE
-# =========================
 def elegir_base(desc):
     d = desc.lower()
-
     if "pedido" in d or "restaurante" in d:
-        return PLANTILLAS[0]
-
-    return PLANTILLAS[1]
-
+        return PLANTILLAS["pedido"]
+    return list(PLANTILLAS.values())[0]
 
 # =========================
-# 🤖 CLONADOR + MODIFICADOR
+# 🤖 GENERADOR
 # =========================
 def generar_flujo(desc):
-    print("🧠 ANALISTA IA...")
-    print("🏗 ARQUITECTO IA...")
-    print("🎨 DISEÑADOR IA...")
-    print("🔍 VALIDANDO JSON...")
-
-    base = buscar_workflows_online(desc)
-
-    if not base:
-        print("⚠ usando base local")
-        base = elegir_base(desc)
+    base = elegir_base(desc)
 
     system = """
 Eres experto en n8n.
 
-Recibirás un workflow real.
+MODIFICA el workflow base según el requerimiento.
 
-Tu trabajo:
-- MODIFICARLO según el requerimiento
-- Mantener estructura válida
-- NO inventar nodos falsos
-- RESPONDER SOLO JSON limpio
-
-Si fallas devuelve:
-{"error":"fail"}
+Devuelve SOLO JSON válido.
 """
 
     prompt = f"""
-WORKFLOW BASE:
+BASE:
 {json.dumps(base, indent=2)}
 
 REQUERIMIENTO:
 {desc}
-
-Devuelve JSON final.
 """
 
+    raw = or_chat(system, prompt)
+
     try:
-        raw = or_chat(system, prompt)
-
         limpio = limpiar_json(raw)
-
         data = json.loads(limpio)
-
-        if "error" in data:
-            print("❌ IA falló → fallback")
-            return base
-
-        print("⚙ CORRIGIENDO...")
-        print("💰 OPTIMIZANDO...")
-        print("💀 ULTRA FLOW listo")
-
         return data
-
-    except Exception as e:
-        print("❌ ERROR IA:", e)
+    except:
         return base
 
+# =========================
+# 💬 TELEGRAM
+# =========================
+estado = {}
+
+def get_st(uid):
+    if uid not in estado:
+        estado[uid] = {"flujo": None}
+    return estado[uid]
+
+async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if uid != ALLOWED_USER:
+        return
+
+    texto = update.message.text
+    st = get_st(uid)
+
+    await update.message.reply_text("🧠 Creando flujo real...")
+
+    flujo = generar_flujo(texto)
+
+    st["flujo"] = flujo
+
+    kb = [
+        [InlineKeyboardButton("📄 Ver JSON", callback_data="json")]
+    ]
+
+    await update.message.reply_text(
+        f"✅ Flujo generado: {flujo.get('name','sin nombre')}",
+        reply_markup=InlineKeyboardMarkup(kb)
+    )
+
+async def botones(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+
+    uid = q.from_user.id
+    st = get_st(uid)
+
+    if q.data == "json":
+        txt = json.dumps(st["flujo"], indent=2)
+
+        for i in range(0, len(txt), 3500):
+            await q.message.reply_text(f"```json\n{txt[i:i+3500]}\n```", parse_mode="Markdown")
+
+async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🔥 CLAW DIOS ACTIVO")
 
 # =========================
-# 🧪 TEST DIRECTO
+# 🚀 RUN
 # =========================
-if __name__ == "__main__":
-    desc = input("Describe el flujo:\n> ")
+app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
-    flujo = generar_flujo(desc)
+app.add_handler(CommandHandler("start", start))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+app.add_handler(CallbackQueryHandler(botones))
 
-    print("\n========== RESULTADO ==========\n")
-    print(json.dumps(flujo, indent=2))
+print("🔥 BOT ACTIVO")
+app.run_polling()
