@@ -29,23 +29,20 @@ def template_restaurante():
         "name": "Pedidos Restaurante",
         "nodes": [
             {
-                "id": "webhook_1",
                 "name": "Webhook",
                 "type": "n8n-nodes-base.webhook",
                 "typeVersion": 2,
                 "position": [200, 300],
                 "parameters": {
                     "path": "pedido",
-                    "httpMethod": "POST",
-                    "responseMode": "lastNode"
+                    "httpMethod": "POST"
                 }
             },
             {
-                "id": "set_1",
                 "name": "Set Pedido",
                 "type": "n8n-nodes-base.set",
                 "typeVersion": 2,
-                "position": [500, 300],
+                "position": [450, 300],
                 "parameters": {
                     "values": {
                         "string": [
@@ -62,12 +59,11 @@ def template_restaurante():
         }
     }
 
-def template_validacion_pago():
+def template_pago():
     return {
-        "name": "Validacion Pago",
+        "name": "Validación Pago",
         "nodes": [
             {
-                "id": "webhook_pago",
                 "name": "Webhook",
                 "type": "n8n-nodes-base.webhook",
                 "typeVersion": 2,
@@ -78,11 +74,10 @@ def template_validacion_pago():
                 }
             },
             {
-                "id": "func_1",
                 "name": "Comparar",
                 "type": "n8n-nodes-base.function",
                 "typeVersion": 1,
-                "position": [500, 300],
+                "position": [450, 300],
                 "parameters": {
                     "functionCode": """
 const texto = $json.texto || '';
@@ -105,7 +100,7 @@ return [{
     }
 
 # =========================
-# 🧠 MULTI AGENTE
+# 🧠 MULTI-AGENTE
 # =========================
 
 def agente_analista(texto):
@@ -117,7 +112,7 @@ def agente_analista(texto):
     return "restaurante"
 
 def agente_arquitecto(tipo):
-    return template_restaurante() if tipo == "restaurante" else template_validacion_pago()
+    return template_restaurante() if tipo == "restaurante" else template_pago()
 
 def agente_diseñador(wf):
     wf["name"] += f" v{random.randint(1,100)}"
@@ -126,44 +121,48 @@ def agente_diseñador(wf):
 def agente_optimizador(wf):
     if random.random() > 0.5:
         wf["nodes"].append({
-            "id": f"extra_{random.randint(100,999)}",
             "name": "Extra",
             "type": "n8n-nodes-base.set",
             "typeVersion": 2,
-            "position": [800, 300],
+            "position": [700, 300],
             "parameters": {
                 "values": {
-                    "string": [{"name": "opt", "value": "ok"}]
+                    "string": [{"name": "extra", "value": "ok"}]
                 }
             }
         })
     return wf
 
 # =========================
-# 🔥 NORMALIZADOR PRO
+# 🔥 LIMPIEZA PARA N8N API
 # =========================
 
-def normalizar(wf):
-    wf["name"] = wf.get("name", "CLAW Flow")
-    wf["nodes"] = wf.get("nodes", [])
-    wf["connections"] = wf.get("connections", {})
-    wf["settings"] = {"executionOrder": "v1"}
-    wf["pinData"] = {}
+def limpiar_nodos(nodes):
+    clean = []
+    for i, n in enumerate(nodes):
+        clean.append({
+            "id": str(i + 1),
+            "name": n.get("name"),
+            "type": n.get("type"),
+            "typeVersion": n.get("typeVersion", 1),
+            "position": n.get("position", [200 + i*250, 300]),
+            "parameters": n.get("parameters", {})
+        })
+    return clean
 
-    for i, node in enumerate(wf["nodes"]):
-        node["id"] = node.get("id", f"node_{i}")
-        node["parameters"] = node.get("parameters", {})
-        node["position"] = node.get("position", [200 + i*250, 300])
-        node["typeVersion"] = node.get("typeVersion", 1)
-
-    return wf
+def construir_payload(wf):
+    return {
+        "name": wf.get("name", "CLAW Flow"),
+        "nodes": limpiar_nodos(wf.get("nodes", [])),
+        "connections": wf.get("connections", {})
+    }
 
 # =========================
-# 🚀 N8N API REAL
+# 🚀 N8N API
 # =========================
 
 def crear_workflow(wf):
-    wf = normalizar(wf)
+    payload = construir_payload(wf)
 
     r = requests.post(
         f"{N8N_URL}/api/v1/workflows",
@@ -171,12 +170,15 @@ def crear_workflow(wf):
             "X-N8N-API-KEY": N8N_API_KEY,
             "Content-Type": "application/json"
         },
-        json=wf,
+        json=payload,
         timeout=15
     )
 
+    print("STATUS:", r.status_code)
+    print("RESP:", r.text)
+
     if r.status_code == 401:
-        return {"error": "Unauthorized - API KEY mala"}
+        return {"error": "❌ API KEY inválida"}
 
     try:
         return r.json()
@@ -204,31 +206,42 @@ async def procesar(update, context, texto):
     estado[uid] = wf
 
     kb = [
-        [InlineKeyboardButton("🚀 Crear", callback_data="crear"),
-         InlineKeyboardButton("📄 JSON", callback_data="ver")]
+        [InlineKeyboardButton("🚀 Crear en n8n", callback_data="crear"),
+         InlineKeyboardButton("📄 Ver JSON", callback_data="ver")]
     ]
 
-    await update.message.reply_text("🔥 Flow listo", reply_markup=InlineKeyboardMarkup(kb))
+    await update.message.reply_text(
+        "🔥 FLOW LISTO (sin errores API)",
+        reply_markup=InlineKeyboardMarkup(kb)
+    )
 
 # =========================
 # 🎛 BOTONES
 # =========================
 
 async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
+    query = update.callback_query
+    await query.answer()
 
-    uid = q.from_user.id
-    chat = q.message.chat.id
+    uid = query.from_user.id
+    chat = query.message.chat.id
 
-    if q.data == "ver":
+    if query.data == "ver":
         txt = json.dumps(estado[uid], indent=2)
         await context.bot.send_message(chat, f"```json\n{txt[:4000]}\n```", parse_mode="Markdown")
 
-    elif q.data == "crear":
-        await context.bot.send_message(chat, "🚀 Enviando a n8n...")
+    elif query.data == "crear":
+        await context.bot.send_message(chat, "🚀 Creando en n8n...")
+
         res = crear_workflow(estado[uid])
-        await context.bot.send_message(chat, f"{res}")
+
+        if "id" in res:
+            await context.bot.send_message(
+                chat,
+                f"✅ Workflow creado\nID: {res['id']}\n{N8N_URL}/workflow/{res['id']}"
+            )
+        else:
+            await context.bot.send_message(chat, f"❌ Error:\n{res}")
 
 # =========================
 # 📩 MENSAJES
@@ -237,16 +250,18 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ALLOWED_USER:
         return
+
     await procesar(update, context, update.message.text)
 
 # =========================
 # 🚀 START
 # =========================
 
+print("🔥 CLAW GIFHUD PRO ACTIVO")
+
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 app.add_handler(CallbackQueryHandler(botones))
 
-print("🔥 CLAW PRO ACTIVO")
 app.run_polling(drop_pending_updates=True)
