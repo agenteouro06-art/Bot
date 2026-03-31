@@ -9,7 +9,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, CallbackQueryHandler, filters
 
 # =========================
-# 🔥 ENV
+# 🔐 ENV
 # =========================
 load_dotenv("/home/mau/claw_core/.env")
 
@@ -21,30 +21,42 @@ N8N_API_KEY = os.getenv("N8N_API_KEY")
 estado = {}
 
 # =========================
-# 🧠 TEMPLATE BASE LIMPIO
+# 🧠 AGENTE ANALISTA
 # =========================
+def analista(texto):
+    t = texto.lower()
 
-def template_pago():
-    return {
-        "name": f"Validacion Pago v{random.randint(1,100)}",
-        "nodes": [
-            {
-                "name": "Webhook",
-                "type": "n8n-nodes-base.webhook",
-                "typeVersion": 2,
-                "position": [200, 300],
-                "parameters": {
-                    "path": "pago",
-                    "httpMethod": "POST"
-                }
-            },
-            {
-                "name": "Comparar",
-                "type": "n8n-nodes-base.function",
-                "typeVersion": 1,
-                "position": [450, 300],
-                "parameters": {
-                    "functionCode": """
+    if "restaurante" in t:
+        return "restaurante"
+    if "pago" in t or "banco" in t:
+        return "pago"
+    return "general"
+
+# =========================
+# 🏗 AGENTE ARQUITECTO
+# =========================
+def arquitecto(tipo):
+    if tipo == "pago":
+        return {
+            "name": f"Validacion Pago v{random.randint(1,100)}",
+            "nodes": [
+                {
+                    "name": "Webhook",
+                    "type": "n8n-nodes-base.webhook",
+                    "typeVersion": 2,
+                    "position": [200, 300],
+                    "parameters": {
+                        "path": "pago",
+                        "httpMethod": "POST"
+                    }
+                },
+                {
+                    "name": "Comparar",
+                    "type": "n8n-nodes-base.function",
+                    "typeVersion": 1,
+                    "position": [450, 300],
+                    "parameters": {
+                        "functionCode": """
 const texto = $json.texto || '';
 const banco = $json.banco || '';
 
@@ -54,98 +66,133 @@ return [{
   }
 }]
 """
+                    }
+                }
+            ],
+            "connections": {
+                "Webhook": {
+                    "main": [[{"node": "Comparar", "type": "main", "index": 0}]]
+                }
+            },
+            "settings": {}
+        }
+
+    # restaurante template
+    return {
+        "name": f"Pedidos Restaurante v{random.randint(1,100)}",
+        "nodes": [
+            {
+                "name": "Webhook",
+                "type": "n8n-nodes-base.webhook",
+                "typeVersion": 2,
+                "position": [200, 300],
+                "parameters": {
+                    "path": "pedido",
+                    "httpMethod": "POST"
+                }
+            },
+            {
+                "name": "Set Pedido",
+                "type": "n8n-nodes-base.set",
+                "typeVersion": 2,
+                "position": [450, 300],
+                "parameters": {
+                    "values": {
+                        "string": [
+                            {"name": "pedido", "value": "={{$json.body}}"}
+                        ]
+                    }
                 }
             }
         ],
         "connections": {
             "Webhook": {
-                "main": [[{"node": "Comparar", "type": "main", "index": 0}]]
+                "main": [[{"node": "Set Pedido", "type": "main", "index": 0}]]
             }
         },
         "settings": {}
     }
 
 # =========================
-# 🧠 AGENTES
+# 🎨 AGENTE DISEÑADOR
 # =========================
+def diseñador(wf):
+    wf["name"] += " PRO"
+    return wf
 
-def agente_analista(texto):
-    if "pago" in texto.lower() or "banco" in texto.lower():
-        return "pago"
-    return "pago"
-
-def agente_arquitecto(tipo):
-    return template_pago()
-
-def agente_optimizador(workflow):
-    # agrega UN solo nodo extra conectado
+# =========================
+# ⚙️ AGENTE OPTIMIZADOR
+# =========================
+def optimizador(wf):
     if random.random() > 0.5:
-        workflow["nodes"].append({
+        wf["nodes"].append({
             "name": "Extra",
             "type": "n8n-nodes-base.set",
             "typeVersion": 2,
             "position": [700, 300],
             "parameters": {
                 "values": {
-                    "string": [{"name": "extra", "value": "ok"}]
+                    "string": [{"name": "status", "value": "ok"}]
                 }
             }
         })
-
-        workflow["connections"]["Comparar"] = {
-            "main": [[{"node": "Extra", "type": "main", "index": 0}]]
-        }
-
-    return workflow
+    return wf
 
 # =========================
-# 🔥 NORMALIZADOR PRO
+# 🔍 VALIDADOR + FIX
 # =========================
-
-def limpiar_workflow(wf):
+def limpiar(wf):
     nombres = set()
-    nuevos_nodos = []
+    nodos = []
 
-    for i, n in enumerate(wf.get("nodes", [])):
+    for i, n in enumerate(wf["nodes"]):
         if n["name"] in nombres:
             continue
         nombres.add(n["name"])
 
-        n["position"] = n.get("position", [200 + i*250, 300])
+        n["position"] = [200 + i*250, 300]
         n["parameters"] = n.get("parameters", {})
         n["typeVersion"] = n.get("typeVersion", 1)
 
-        nuevos_nodos.append(n)
+        nodos.append(n)
 
-    wf["nodes"] = nuevos_nodos
+    wf["nodes"] = nodos
 
     # reconstruir conexiones
     conexiones = {}
-    for i in range(len(nuevos_nodos) - 1):
-        conexiones[nuevos_nodos[i]["name"]] = {
-            "main": [[{"node": nuevos_nodos[i+1]["name"], "type": "main", "index": 0}]]
+    for i in range(len(nodos)-1):
+        conexiones[nodos[i]["name"]] = {
+            "main": [[{"node": nodos[i+1]["name"], "type": "main", "index": 0}]]
         }
 
     wf["connections"] = conexiones
 
-    # 🔥 CRÍTICO
     wf["settings"] = {}
-
-    # limpiar basura
-    for k in ["id", "active"]:
-        wf.pop(k, None)
 
     return wf
 
 # =========================
-# 🚀 N8N CON AUTO-REPAIR
+# 🤖 AGENTE REPARADOR
 # =========================
+def reparar_por_error(wf, error):
+    error = error.lower()
 
-def crear_con_retry(workflow, max_intentos=3):
-    for intento in range(max_intentos):
+    if "settings" in error:
+        wf["settings"] = {}
+
+    if "nodes" in error:
+        wf["nodes"] = wf["nodes"][:2]
+
+    return wf
+
+# =========================
+# 🚀 CREAR CON IA + RETRY
+# =========================
+def crear_saas(wf):
+    for intento in range(3):
         print(f"🚀 Intento {intento+1}")
 
-        workflow = limpiar_workflow(workflow)
+        wf = limpiar(wf)
 
         r = requests.post(
             f"{N8N_URL}/api/v1/workflows",
@@ -153,7 +200,7 @@ def crear_con_retry(workflow, max_intentos=3):
                 "X-N8N-API-KEY": N8N_API_KEY,
                 "Content-Type": "application/json"
             },
-            json=workflow
+            json=wf
         )
 
         print("STATUS:", r.status_code)
@@ -162,33 +209,34 @@ def crear_con_retry(workflow, max_intentos=3):
         if r.status_code in [200, 201]:
             return r.json()
 
-        # 🔥 REPARACIÓN AUTOMÁTICA
-        workflow["settings"] = {}
+        wf = reparar_por_error(wf, r.text)
 
     return {"error": "❌ Falló después de 3 intentos"}
 
 # =========================
 # 🤖 MOTOR
 # =========================
-
 async def procesar(update, context, texto):
     uid = update.effective_user.id
 
     pasos = [
-        "🧠 Analizando...",
-        "🏗 Diseñando...",
-        "🔍 Validando...",
-        "⚙ Corrigiendo...",
-        "💰 Optimizando..."
+        "🧠 Analista IA",
+        "🏗 Arquitecto IA",
+        "🎨 Diseñador IA",
+        "⚙ Optimizador IA",
+        "🔍 Validando",
+        "🛠 Reparando",
+        "🚀 Listo"
     ]
 
     for p in pasos:
         await update.message.reply_text(p)
         await asyncio.sleep(0.2)
 
-    tipo = agente_analista(texto)
-    wf = agente_arquitecto(tipo)
-    wf = agente_optimizador(wf)
+    tipo = analista(texto)
+    wf = arquitecto(tipo)
+    wf = diseñador(wf)
+    wf = optimizador(wf)
 
     estado[uid] = wf
 
@@ -199,12 +247,11 @@ async def procesar(update, context, texto):
         ]
     ]
 
-    await update.message.reply_text("✅ Flujo listo", reply_markup=InlineKeyboardMarkup(kb))
+    await update.message.reply_text("💰 Flujo SaaS listo para vender", reply_markup=InlineKeyboardMarkup(kb))
 
 # =========================
 # 🎛 BOTONES
 # =========================
-
 async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -217,14 +264,13 @@ async def botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat, f"```json\n{txt[:4000]}\n```", parse_mode="Markdown")
 
     elif query.data == "crear":
-        await context.bot.send_message(chat, "🚀 Creando en n8n con retry inteligente...")
-        res = crear_con_retry(estado[uid])
+        await context.bot.send_message(chat, "🚀 Creando flujo SaaS...")
+        res = crear_saas(estado[uid])
         await context.bot.send_message(chat, str(res))
 
 # =========================
 # 📩 MENSAJES
 # =========================
-
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ALLOWED_USER:
         return
@@ -234,11 +280,10 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================
 # 🚀 START
 # =========================
-
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 app.add_handler(CallbackQueryHandler(botones))
 
-print("🔥 CLAW GOD MODE ACTIVO (FIXED)")
+print("💀 CLAW SaaS MODE ACTIVADO")
 app.run_polling()
